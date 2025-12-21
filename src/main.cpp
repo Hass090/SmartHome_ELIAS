@@ -25,6 +25,11 @@ bool buzzerActive = 0;
 #define Y_LED_PIN 17
 #define TEMP_HOT 28.0 // °C
 
+/* ===== REED ===== */
+#define REED_PIN 18
+bool doorOpen = false;
+uint32_t lastDoorTime = 0;
+
 /* ===== PIR ===== */
 #define PIR_PIN 22
 static const uint32_t PIR_CALIBRATION_TIME = 60000;
@@ -61,7 +66,7 @@ void setup()
   Serial.begin(115200);
   delay(2000);
 
-  Serial.println("Smart Home - BME280 + OLED + PIR (ISR)");
+  Serial.println("Smart Home Elias");
 
   /* PIR */
   pinMode(PIR_PIN, INPUT_PULLDOWN);
@@ -81,6 +86,9 @@ void setup()
   digitalWrite(B_LED_PIN, LOW);
   digitalWrite(Y_LED_PIN, LOW);
 
+  /* REED */
+  pinMode(REED_PIN, INPUT_PULLUP);
+
   /* OLED */
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
   {
@@ -93,7 +101,7 @@ void setup()
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("Smart Home PAP");
+  display.println("Smart Home Elias");
   display.println("PIR calibrating...");
   display.display();
 
@@ -146,6 +154,22 @@ void loop()
   {
     motionDetected = false;
   }
+  /* reed + buzzer */
+  int reedState = digitalRead(REED_PIN);
+
+  if(reedState == LOW && !doorOpen){
+    doorOpen = true;
+    lastDoorTime = millis();
+
+    tone(BUZZER_PIN, BUZZER_FREQ);
+    buzzerActive = true;
+    buzzerOffTime = millis() + BUZZER_DUR * 2;
+  }
+
+  // reset indication after 0.5 seconds
+  if(doorOpen && millis() - lastDoorTime > 500){ 
+    doorOpen = false;
+  }
 
   if (millis() - lastSensorUpdate >= SENSOR_UPDATE_TIME)
   {
@@ -157,19 +181,22 @@ void loop()
 
     display.clearDisplay();
     display.setCursor(0, 0);
-    display.println("Smart Home PAP");
+    display.println("Smart Home Elias");
 
-    display.setCursor(0, 18);
+    display.setCursor(0, 10);
     display.printf("Temp:  %.1f C\n", temp);
 
-    display.setCursor(0, 28);
+    display.setCursor(0, 20);
     display.printf("Hum:   %.1f %%\n", hum);
 
-    display.setCursor(0, 38);
+    display.setCursor(0, 30);
     display.printf("Press: %.0f hPa\n", press);
 
-    display.setCursor(0, 52);
+    display.setCursor(0, 40);
     display.println(motionDetected ? "MOVEMENT!" : "All quiet");
+
+    display.setCursor(0, 50);
+    display.printf("Door: %s\n", doorOpen ? "OPEN!" : "closed");
 
     display.display();
     
@@ -184,8 +211,9 @@ void loop()
     }
 
     Serial.printf(
-        "Temp: %.1f C | Hum: %.1f %% | Press: %.0f hPa | %s\n",
+        "Temp: %.1f C | Hum: %.1f %% | Press: %.0f hPa | %s | Door: %s\n",
         temp, hum, press,
-        motionDetected ? "MOVEMENT" : "quiet");
+        motionDetected ? "MOVEMENT" : "quiet", 
+        doorOpen ? "OPEN!" : "closed");
   }
 }
