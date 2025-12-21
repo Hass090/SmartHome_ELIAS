@@ -13,8 +13,20 @@
 #define I2C_SDA 12
 #define I2C_SCL 13
 
+/* ===== BUZZER ===== */
+#define BUZZER_PIN 15
+#define BUZZER_DUR 500
+#define BUZZER_FREQ 1000
+uint32_t buzzerOffTime = 0;
+bool buzzerActive = 0;
+
+/* ===== LEDs ===== */
+#define B_LED_PIN 16
+#define Y_LED_PIN 17
+#define TEMP_HOT 28.0 // °C
+
 /* ===== PIR ===== */
-#define PIR_PIN 15
+#define PIR_PIN 22
 static const uint32_t PIR_CALIBRATION_TIME = 60000;
 static const uint32_t PIR_IRQ_DEBOUNCE = 100;
 
@@ -59,11 +71,22 @@ void setup()
   Wire.setSCL(I2C_SCL);
   Wire.begin();
 
+  /* BUZZER */
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  /* LEDs */
+  pinMode(B_LED_PIN, OUTPUT);
+  pinMode(Y_LED_PIN, OUTPUT);
+  digitalWrite(B_LED_PIN, LOW);
+  digitalWrite(Y_LED_PIN, LOW);
+
   /* OLED */
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
   {
     Serial.println("SSD1306 not found!");
-    while (true);
+    while (true)
+      ;
   }
 
   display.clearDisplay();
@@ -82,7 +105,8 @@ void setup()
     display.setCursor(0, 20);
     display.println("BME280 error");
     display.display();
-    while (true);
+    while (true)
+      ;
   }
 
   /* PIR calibration */
@@ -97,14 +121,26 @@ void setup()
 
 void loop()
 {
-  /* ===== Handle PIR event ===== */
+  /* ===== Handle PIR event + buzzer + blue LED ====== */
   if (motionIRQ)
   {
     motionIRQ = false;
     motionDetected = true;
     lastMotionTime = millis();
-  }
 
+    /* turn on the buzzer and blue LED */
+    digitalWrite(B_LED_PIN, HIGH);
+    tone(BUZZER_PIN, BUZZER_FREQ);
+    buzzerActive = true;
+    buzzerOffTime = millis() + BUZZER_DUR;
+  }
+  /* turn off the buzzer and blue LED */
+  if (buzzerActive && millis() >= buzzerOffTime)
+  {
+    noTone(BUZZER_PIN); 
+    digitalWrite(B_LED_PIN, LOW);
+    buzzerActive = false;
+  }
   /* Resetting the movement indication after 2 sec */
   if (motionDetected && millis() - lastMotionTime > 2000)
   {
@@ -136,6 +172,16 @@ void loop()
     display.println(motionDetected ? "MOVEMENT!" : "All quiet");
 
     display.display();
+    
+    /*High temperature(=>28) = Yellow LED turns on*/
+    if (temp > TEMP_HOT)
+    {
+      digitalWrite(Y_LED_PIN, HIGH);
+    }
+    else
+    {
+      digitalWrite(Y_LED_PIN, LOW);
+    }
 
     Serial.printf(
         "Temp: %.1f C | Hum: %.1f %% | Press: %.0f hPa | %s\n",
