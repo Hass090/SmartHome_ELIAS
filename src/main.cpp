@@ -3,6 +3,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_BME280.h>
+#include <Servo.h>
 
 /* ===== OLED ===== */
 #define SCREEN_WIDTH 128
@@ -10,23 +11,23 @@
 #define OLED_RESET -1
 
 /* ===== I2C ===== */
-#define I2C_SDA 12
-#define I2C_SCL 13
+#define I2C_SDA 14
+#define I2C_SCL 15
 
 /* ===== BUZZER ===== */
-#define BUZZER_PIN 15
+#define BUZZER_PIN 6
 #define BUZZER_DUR 500
 #define BUZZER_FREQ 1000
 uint32_t buzzerOffTime = 0;
 bool buzzerActive = 0;
 
 /* ===== LEDs ===== */
-#define B_LED_PIN 16
-#define Y_LED_PIN 17
+#define B_LED_PIN 21
+#define Y_LED_PIN 20
 #define TEMP_HOT 28.0 // °C
 
 /* ===== REED ===== */
-#define REED_PIN 18
+#define REED_PIN 5
 bool doorOpen = false;
 uint32_t lastDoorTime = 0;
 
