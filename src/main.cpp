@@ -4,6 +4,8 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_BME280.h>
 #include <Servo.h>
+#include <SPI.h>
+#include <MFRC522.h>
 
 /* ===== OLED ===== */
 #define SCREEN_WIDTH 128
@@ -11,11 +13,14 @@
 #define OLED_RESET -1
 
 /* ===== I2C ===== */
-#define I2C_SDA 14
-#define I2C_SCL 15
+#define I2C_SDA 12
+#define I2C_SCL 13
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Adafruit_BME280 bme;
 
 /* ===== BUZZER ===== */
-#define BUZZER_PIN 6
+#define BUZZER_PIN 15
 #define BUZZER_DUR 500
 #define BUZZER_FREQ 1000
 uint32_t buzzerOffTime = 0;
@@ -24,23 +29,38 @@ bool buzzerActive = 0;
 /* ===== LEDs ===== */
 #define B_LED_PIN 21
 #define Y_LED_PIN 20
-#define TEMP_HOT 28.0 // °C
+#define TEMP_HOT 24.0 // °C
 
 /* ===== REED ===== */
-#define REED_PIN 5
+#define REED_PIN 9
 bool doorOpen = false;
 uint32_t lastDoorTime = 0;
 
+/* ===== RFID ===== */
+#define RFID_SS_PIN 5
+#define RFID_RST_PIN 22
+
+MFRC522 mfrc522(RFID_SS_PIN, RFID_RST_PIN);
+
+/* ===== SERVOMOTOR ===== */
+#define SERVO_PIN 18
+#define LOCK_OPEN_A 90
+#define LOCK_CLOSE_A 0
+#define OPEN_DUR 3000
+
+Servo doorServo;
+uint32_t lockOpenTime = 0;
+bool lockIsOpen = false;
+
+byte authorizedUID[] = {0x43, 0x1E, 0x8D, 0x97};
+
 /* ===== PIR ===== */
-#define PIR_PIN 22
+#define PIR_PIN 19
 static const uint32_t PIR_CALIBRATION_TIME = 60000;
 static const uint32_t PIR_IRQ_DEBOUNCE = 100;
 
 /* ===== Update timing ===== */
 static const uint32_t SENSOR_UPDATE_TIME = 2000;
-
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-Adafruit_BME280 bme;
 
 /* ===== PIR ISR state ===== */
 volatile bool motionIRQ = false;
@@ -60,6 +80,15 @@ void pirISR()
     motionIRQ = true;
     lastIRQTime = now;
   }
+}
+/* ==== Checks if the UID of the read card matches the authorized one ===== */
+bool checkUID()
+{
+  if (mfrc522.uid.size == sizeof(authorizedUID))
+  {
+    return memcmp(mfrc522.uid.uidByte, authorizedUID, sizeof(authorizedUID)) == 0;
+  }
+  return false;
 }
 
 void setup()
@@ -89,6 +118,38 @@ void setup()
 
   /* REED */
   pinMode(REED_PIN, INPUT_PULLUP);
+
+  /* SERVO */
+  doorServo.attach(SERVO_PIN);
+  doorServo.write(LOCK_CLOSE_A);
+  delay(500);
+
+  /* RFID */
+  SPI.setRX(4);
+  SPI.setTX(7);
+  SPI.setSCK(6);
+  SPI.begin();
+  mfrc522.PCD_Init();
+
+  byte version = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
+  Serial.print("MFRC522 Version: 0x");
+  Serial.println(version, HEX);
+
+  if (version == 0x91 || version == 0x92)
+  {
+    Serial.println("OK - genuine MFRC522 chip detected");
+  }
+  else if (version == 0x00 || version == 0xFF)
+  {
+    Serial.println("ERROR - no communication (wiring/contact/power)");
+  }
+  else
+  {
+    Serial.println("Clone chip or unknown version");
+  }
+
+  mfrc522.PCD_AntennaOn(); // Turn on the antenna
+  Serial.println("RFID initialized");
 
   /* OLED */
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
@@ -146,7 +207,7 @@ void loop()
   /* turn off the buzzer and blue LED */
   if (buzzerActive && millis() >= buzzerOffTime)
   {
-    noTone(BUZZER_PIN); 
+    noTone(BUZZER_PIN);
     digitalWrite(B_LED_PIN, LOW);
     buzzerActive = false;
   }
@@ -158,7 +219,8 @@ void loop()
   /* reed + buzzer */
   int reedState = digitalRead(REED_PIN);
 
-  if(reedState == LOW && !doorOpen){
+  if (reedState == LOW && !doorOpen)
+  {
     doorOpen = true;
     lastDoorTime = millis();
 
@@ -168,8 +230,51 @@ void loop()
   }
 
   // reset indication after 0.5 seconds
-  if(doorOpen && millis() - lastDoorTime > 500){ 
+  if (doorOpen && millis() - lastDoorTime > 500)
+  {
     doorOpen = false;
+  }
+
+  // Checks if a new card has been presented to the reader
+  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial())
+  {
+    // Prints the card's UID to the Serial Monitor
+    Serial.print("Card UID: ");
+    for (byte i = 0; i < mfrc522.uid.size; i++)
+    {
+      Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
+      Serial.print(mfrc522.uid.uidByte[i], HEX);
+    }
+    Serial.println();
+
+    // Check if this is an authorized card
+    if (checkUID())
+    {
+      Serial.println("ACCESS GRANTED");
+      doorServo.write(LOCK_OPEN_A);
+      lockIsOpen = true;
+      lockOpenTime = millis();
+
+      // Feedback that the lock is open
+      tone(BUZZER_PIN, 1500, 200);
+      delay(200);
+      tone(BUZZER_PIN, 2000, 200);
+    }
+    else
+    {
+      Serial.println("ACCESS DENIED");
+      tone(BUZZER_PIN, 300, 1000); // Long low beep - refusal
+    }
+    // Stop communication with the map
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+  }
+  // Automatically close the lock after 3 sec
+  if (lockIsOpen && millis() - lockOpenTime >= OPEN_DUR)
+  {
+    doorServo.write(LOCK_CLOSE_A);
+    lockIsOpen = false;
+    Serial.println("Lock closed automatically");
   }
 
   if (millis() - lastSensorUpdate >= SENSOR_UPDATE_TIME)
@@ -200,7 +305,7 @@ void loop()
     display.printf("Door: %s\n", doorOpen ? "OPEN!" : "closed");
 
     display.display();
-    
+
     /*High temperature(=>28) = Yellow LED turns on*/
     if (temp > TEMP_HOT)
     {
@@ -214,7 +319,7 @@ void loop()
     Serial.printf(
         "Temp: %.1f C | Hum: %.1f %% | Press: %.0f hPa | %s | Door: %s\n",
         temp, hum, press,
-        motionDetected ? "MOVEMENT" : "quiet", 
+        motionDetected ? "MOVEMENT" : "quiet",
         doorOpen ? "OPEN!" : "closed");
   }
 }
