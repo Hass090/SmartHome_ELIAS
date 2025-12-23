@@ -6,6 +6,9 @@
 #include <Servo.h>
 #include <SPI.h>
 #include <MFRC522.h>
+#include "HUSKYLENS.h"
+
+HUSKYLENS huskylens;
 
 /* ===== OLED ===== */
 #define SCREEN_WIDTH 128
@@ -41,18 +44,25 @@ uint32_t lastDoorTime = 0;
 #define RFID_RST_PIN 22
 
 MFRC522 mfrc522(RFID_SS_PIN, RFID_RST_PIN);
+byte authorizedUID[] = {0x43, 0x1E, 0x8D, 0x97};
 
 /* ===== SERVOMOTOR ===== */
 #define SERVO_PIN 18
 #define LOCK_OPEN_A 90
 #define LOCK_CLOSE_A 0
-#define OPEN_DUR 3000
+#define OPEN_DUR 10000
 
 Servo doorServo;
 uint32_t lockOpenTime = 0;
 bool lockIsOpen = false;
 
-byte authorizedUID[] = {0x43, 0x1E, 0x8D, 0x97};
+/* ===== HUSKYLENS ===== */
+const int KNOWN_FACE_ID = 1;
+uint32_t lastFaceTime = 0;
+static uint32_t lastFacePrint = 0;
+const uint32_t FACE_WINDOW = 3000;
+const uint32_t FACE_PRINT_DELAY = 3000;
+bool faceAuthorized = false;
 
 /* ===== PIR ===== */
 #define PIR_PIN 19
@@ -124,66 +134,84 @@ void setup()
   doorServo.write(LOCK_CLOSE_A);
   delay(500);
 
-  /* RFID */
+  /* ===== Final components check ===== */
+  Serial.println("Checking all components...");
+
+  bool allOk = true;
+
+  // OLED
+  bool oledOk = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  if (!oledOk)
+  {
+    Serial.println("OLED SSD1306 not detected!");
+    allOk = false;
+  }
+
+  // BME280
+  if (!bme.begin(0x77))
+  {
+    Serial.println("BME280 not detected!");
+    allOk = false;
+  }
+
+  // Huskylens
+  if (!huskylens.begin(Wire))
+  {
+    Serial.println("Huskylens not detected!");
+    allOk = false;
+  }
+  else
+  {
+    huskylens.writeAlgorithm(ALGORITHM_FACE_RECOGNITION);
+  }
+
+  // RFID
   SPI.setRX(4);
   SPI.setTX(7);
   SPI.setSCK(6);
   SPI.begin();
+
   mfrc522.PCD_Init();
-
   byte version = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
-  Serial.print("MFRC522 Version: 0x");
-  Serial.println(version, HEX);
-
-  if (version == 0x91 || version == 0x92)
+  if (version == 0x00 || version == 0xFF)
   {
-    Serial.println("OK - genuine MFRC522 chip detected");
+    Serial.println("RFID RC522 not detected or wiring issue!");
+    allOk = false;
   }
-  else if (version == 0x00 || version == 0xFF)
+
+  if (allOk)
   {
-    Serial.println("ERROR - no communication (wiring/contact/power)");
+    Serial.println("### All sensors and modules DETECTED and ready! ###");
   }
   else
   {
-    Serial.println("Clone chip or unknown version");
+    Serial.println("### Some components FAILED - check wiring/power ###");
   }
-
-  mfrc522.PCD_AntennaOn(); // Turn on the antenna
-  Serial.println("RFID initialized");
-
-  /* OLED */
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
+  // Shows whether the components passed the test (output to OLED)
+  if (oledOk)
   {
-    Serial.println("SSD1306 not found!");
-    while (true)
-      ;
-  }
-
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println("Smart Home Elias");
-  display.println("PIR calibrating...");
-  display.display();
-
-  /* BME280 */
-  if (!bme.begin(0x77))
-  {
-    Serial.println("BME280 not found!");
     display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("Smart Home Elias");
     display.setCursor(0, 20);
-    display.println("BME280 error");
+    if (allOk)
+    {
+      display.println("ALL COMPONENTS OK!");
+    }
+    else
+    {
+      display.println("CHECK WIRING!");
+    }
+    display.setCursor(0, 40);
+    display.println("PIR calibrating...");
     display.display();
-    while (true)
-      ;
   }
 
-  /* PIR calibration */
+  // PIR calibration
   Serial.println("PIR calibration...");
   delay(PIR_CALIBRATION_TIME);
-
-  /* Attach interrupt */
   attachInterrupt(digitalPinToInterrupt(PIR_PIN), pirISR, RISING);
 
   Serial.println("System ready.");
@@ -191,7 +219,7 @@ void setup()
 
 void loop()
 {
-  /* ===== Handle PIR event + buzzer + blue LED ====== */
+  /* Handle PIR event + buzzer + blue LED */
   if (motionIRQ)
   {
     motionIRQ = false;
@@ -250,22 +278,33 @@ void loop()
     // Check if this is an authorized card
     if (checkUID())
     {
-      Serial.println("ACCESS GRANTED");
-      doorServo.write(LOCK_OPEN_A);
-      lockIsOpen = true;
-      lockOpenTime = millis();
+      // Check if there was a face
+      if (faceAuthorized && (millis() - lastFaceTime < FACE_WINDOW))
+      {
+        Serial.println("ACCESS GRANTED");
 
-      // Feedback that the lock is open
-      tone(BUZZER_PIN, 1500, 200);
-      delay(200);
-      tone(BUZZER_PIN, 2000, 200);
+        doorServo.write(LOCK_OPEN_A);
+        lockIsOpen = true;
+        lockOpenTime = millis();
+
+        // Pleasant audio feedback
+        tone(BUZZER_PIN, 1500, 200);
+        delay(200);
+        tone(BUZZER_PIN, 2000, 200);
+        delay(200);
+        tone(BUZZER_PIN, 1500, 200);
+      }
+      else
+      {
+        Serial.println("RFID OK but no recent face - ACCESS DENIED");
+        tone(BUZZER_PIN, 500, 800);
+      }
     }
     else
     {
-      Serial.println("ACCESS DENIED");
-      tone(BUZZER_PIN, 300, 1000); // Long low beep - refusal
+      Serial.println("Unknown card - ACCESS DENIED");
+      tone(BUZZER_PIN, 300, 1000);
     }
-    // Stop communication with the map
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
   }
@@ -275,6 +314,47 @@ void loop()
     doorServo.write(LOCK_CLOSE_A);
     lockIsOpen = false;
     Serial.println("Lock closed automatically");
+  }
+
+  // Huskylens processing
+
+  bool currentFaceDetected = false;
+
+  if (huskylens.request())
+  {
+    if (huskylens.isLearned() && huskylens.available())
+    {
+      while (huskylens.available())
+      {
+        HUSKYLENSResult result = huskylens.read();
+        if (result.command == COMMAND_RETURN_BLOCK && result.ID == KNOWN_FACE_ID)
+        {
+          currentFaceDetected = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Updating the global state
+  if (currentFaceDetected)
+  {
+    faceAuthorized = true;
+    lastFaceTime = millis();
+
+    if (millis() - lastFacePrint >= FACE_PRINT_DELAY)
+    {
+      Serial.println("Known face detected!");
+      lastFacePrint = millis();
+    }
+  }
+  else
+  {
+    // If more than 3 seconds have passed since the last detection - reset
+    if (millis() - lastFaceTime > FACE_WINDOW)
+    {
+      faceAuthorized = false;
+    }
   }
 
   if (millis() - lastSensorUpdate >= SENSOR_UPDATE_TIME)
@@ -289,20 +369,23 @@ void loop()
     display.setCursor(0, 0);
     display.println("Smart Home Elias");
 
-    display.setCursor(0, 10);
+    display.setCursor(0, 8);
     display.printf("Temp:  %.1f C\n", temp);
 
-    display.setCursor(0, 20);
+    display.setCursor(0, 16);
     display.printf("Hum:   %.1f %%\n", hum);
 
-    display.setCursor(0, 30);
+    display.setCursor(0, 24);
     display.printf("Press: %.0f hPa\n", press);
 
-    display.setCursor(0, 40);
-    display.println(motionDetected ? "MOVEMENT!" : "All quiet");
+    display.setCursor(0, 32);
+    display.printf("Movements: %s\n", motionDetected ? "DETECTED!" : "All quiet");
 
-    display.setCursor(0, 50);
+    display.setCursor(0, 40);
     display.printf("Door: %s\n", doorOpen ? "OPEN!" : "closed");
+
+    display.setCursor(0, 48);
+    display.printf("FaceID: %s\n", faceAuthorized ? "Face OK" : "No face");
 
     display.display();
 
@@ -317,9 +400,10 @@ void loop()
     }
 
     Serial.printf(
-        "Temp: %.1f C | Hum: %.1f %% | Press: %.0f hPa | %s | Door: %s\n",
+        "Temp: %.1f C | Hum: %.1f %% | Press: %.0f hPa | Movements: %s | Door: %s | FaceID: %s\n",
         temp, hum, press,
-        motionDetected ? "MOVEMENT" : "quiet",
-        doorOpen ? "OPEN!" : "closed");
+        motionDetected ? "DETECTED!" : "All quiet",
+        doorOpen ? "OPEN!" : "closed",
+        faceAuthorized ? "Face OK" : "No face");
   }
 }
