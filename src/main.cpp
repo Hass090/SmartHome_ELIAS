@@ -7,8 +7,40 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include "HUSKYLENS.h"
+#include <WiFi.h>
+#include <PubSubClient.h>
 
 HUSKYLENS huskylens;
+
+const char *ssid = "NOS-ADA4";
+const char *password = "R6H44EEE";
+const char *mqtt_server = "192.168.1.15";
+
+WiFiClient wificlient;
+PubSubClient client(wificlient);
+
+/* ===== BME ===== */
+float temp = 0.0;
+float hum = 0.0;
+float press = 0.0;
+
+static const uint32_t ENV_UPDATE_TIME = 30000;
+uint32_t lastEnvPublish = 0;
+
+/* ===== MQTT ===== */
+const char *mqtt_username = "pico_user";
+const char *mqtt_password = "123mqtt456b";
+
+#define BASE_TOPIC "smarthome/pico/"
+
+#define TOPIC_TEMP BASE_TOPIC "environment/temperature"
+#define TOPIC_HUM BASE_TOPIC "environment/humidity"
+#define TOPIC_PRESS BASE_TOPIC "environment/pressure"
+#define TOPIC_MOTION BASE_TOPIC "security/motion"
+#define TOPIC_DOOR BASE_TOPIC "security/door"
+#define TOPIC_FACE BASE_TOPIC "security/face"
+#define TOPIC_LOCK BASE_TOPIC "security/lock"
+#define TOPIC_STATUS BASE_TOPIC "status/connection"
 
 /* ===== OLED ===== */
 #define SCREEN_WIDTH 128
@@ -38,6 +70,10 @@ bool buzzerActive = 0;
 #define REED_PIN 9
 bool doorOpen = false;
 uint32_t lastDoorTime = 0;
+static bool lastReedState = HIGH;
+static uint32_t lastReedChange = 0;
+const uint32_t REED_DEBOUNCE = 1000;
+static bool lastDoorPublished = false;
 
 /* ===== RFID ===== */
 #define RFID_SS_PIN 5
@@ -55,6 +91,7 @@ byte authorizedUID[] = {0x43, 0x1E, 0x8D, 0x97};
 Servo doorServo;
 uint32_t lockOpenTime = 0;
 bool lockIsOpen = false;
+static bool lastLockPublished = false;
 
 /* ===== HUSKYLENS ===== */
 const int KNOWN_FACE_ID = 1;
@@ -63,11 +100,13 @@ static uint32_t lastFacePrint = 0;
 const uint32_t FACE_WINDOW = 3000;
 const uint32_t FACE_PRINT_DELAY = 3000;
 bool faceAuthorized = false;
+static bool lastFacePublished = false;
 
 /* ===== PIR ===== */
 #define PIR_PIN 19
 static const uint32_t PIR_CALIBRATION_TIME = 60000;
 static const uint32_t PIR_IRQ_DEBOUNCE = 100;
+static bool lastMotionPublished = false;
 
 /* ===== Update timing ===== */
 static const uint32_t SENSOR_UPDATE_TIME = 2000;
@@ -100,13 +139,52 @@ bool checkUID()
   }
   return false;
 }
+/* ====  Reconnecting to MQTT if the connection is lost ===== */
+void reconnect()
+{
+  if (WiFi.status() != WL_CONNECTED)
+    return;
+
+  Serial.print("\nAttempting MQTT connection... ");
+  if (client.connect("PicoClient", mqtt_username, mqtt_password, TOPIC_STATUS, 1, true, "offline"))
+  {
+    Serial.println("connected!");
+    // willTopic, willQos, willRetain, willMessage
+    client.publish(TOPIC_STATUS, "online", true);
+  }
+  else
+  {
+    Serial.print("failed, rc=");
+    Serial.println(client.state());
+  }
+}
 
 void setup()
 {
   Serial.begin(115200);
   delay(2000);
-
   Serial.println("Smart Home Elias");
+
+  /* Connecting to Wi-Fi */
+  WiFi.begin(ssid, password);
+  uint32_t wifiTimeout = millis() + 20000;
+  while (WiFi.status() != WL_CONNECTED && millis() < wifiTimeout)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("\nWiFi connected");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+
+    client.setServer(mqtt_server, 1883);
+  }
+  else
+  {
+    Serial.println("\nWiFi FAILED");
+  }
 
   /* PIR */
   pinMode(PIR_PIN, INPUT_PULLDOWN);
@@ -219,6 +297,61 @@ void setup()
 
 void loop()
 {
+  // MQTT maintain
+  client.loop();
+
+  if (!client.connected())
+  {
+    static unsigned long lastRetry = 0;
+    if (millis() - lastRetry > 5000)
+    {
+      lastRetry = millis();
+      reconnect();
+    }
+  }
+
+  // Publish data from BME only once every 20 seconds.
+  if (client.connected() && millis() - lastEnvPublish >= ENV_UPDATE_TIME)
+  {
+    lastEnvPublish = millis();
+
+    temp = bme.readTemperature();
+    hum = bme.readHumidity();
+    press = bme.readPressure() / 100.0F;
+
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "%.1f", temp);
+    client.publish(TOPIC_TEMP, buffer);
+    snprintf(buffer, sizeof(buffer), "%.1f", hum);
+    client.publish(TOPIC_HUM, buffer);
+    snprintf(buffer, sizeof(buffer), "%.0f", press);
+    client.publish(TOPIC_PRESS, buffer);
+  }
+  // Security events - publish only on change
+  if (client.connected())
+  {
+    if (motionDetected != lastMotionPublished)
+    {
+      client.publish(TOPIC_MOTION, motionDetected ? "DETECTED" : "quiet");
+      lastMotionPublished = motionDetected;
+    }
+    if (doorOpen != lastDoorPublished)
+    {
+      client.publish(TOPIC_DOOR, doorOpen ? "OPEN" : "closed");
+      lastDoorPublished = doorOpen;
+    }
+    if (faceAuthorized != lastFacePublished)
+    {
+      client.publish(TOPIC_FACE, faceAuthorized ? "Authorized" : "none");
+      lastFacePublished = faceAuthorized;
+    }
+    if (lockIsOpen != lastLockPublished)
+    {
+      client.publish(TOPIC_LOCK, lockIsOpen ? "Unlocked" : "locked");
+      lastLockPublished = lockIsOpen;
+    }
+  }
+
   /* Handle PIR event + buzzer + blue LED */
   if (motionIRQ)
   {
@@ -246,22 +379,30 @@ void loop()
   }
   /* reed + buzzer */
   int reedState = digitalRead(REED_PIN);
-
-  if (reedState == LOW && !doorOpen)
+  if (reedState != lastReedState)
   {
-    doorOpen = true;
-    lastDoorTime = millis();
-
-    tone(BUZZER_PIN, BUZZER_FREQ);
-    buzzerActive = true;
-    buzzerOffTime = millis() + BUZZER_DUR * 2;
+    lastReedChange = millis();
   }
-
-  // reset indication after 0.5 seconds
-  if (doorOpen && millis() - lastDoorTime > 500)
+  if (millis() - lastReedChange > REED_DEBOUNCE)
   {
-    doorOpen = false;
+    bool newDoorOpen = (reedState == LOW);
+    if (newDoorOpen != doorOpen)
+    {
+      doorOpen = newDoorOpen;
+      if (client.connected())
+      {
+        client.publish(TOPIC_DOOR, doorOpen ? "OPEN" : "closed");
+        lastDoorPublished = doorOpen;
+      }
+      if (doorOpen)
+      {
+        tone(BUZZER_PIN, BUZZER_FREQ);
+        buzzerActive = true;
+        buzzerOffTime = millis() + BUZZER_DUR * 2;
+      }
+    }
   }
+  lastReedState = reedState;
 
   // Checks if a new card has been presented to the reader
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial())
@@ -361,9 +502,9 @@ void loop()
   {
     lastSensorUpdate = millis();
 
-    float temp = bme.readTemperature();
-    float hum = bme.readHumidity();
-    float press = bme.readPressure() / 100.0F;
+    temp = bme.readTemperature();
+    hum = bme.readHumidity();
+    press = bme.readPressure() / 100.0F;
 
     display.clearDisplay();
     display.setCursor(0, 0);
@@ -386,6 +527,9 @@ void loop()
 
     display.setCursor(0, 48);
     display.printf("FaceID: %s\n", faceAuthorized ? "Face OK" : "No face");
+
+    display.setCursor(0, 56);
+    display.printf("Net: %s", client.connected() ? "OK" : "offline");
 
     display.display();
 
