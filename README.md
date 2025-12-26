@@ -6,4 +6,4 @@ mosquitto_sub -h 127.0.0.1 -t "smarthome/pico/#" -v -u pico_user -P 123mqtt456b
 
 ssh hass@192.168.1.15
 
-passdb: 123root456maria
+passdb: 123root456maria passphpMA: 123php456admin
