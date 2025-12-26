@@ -321,33 +321,33 @@ void loop()
 
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "%.1f", temp);
-    client.publish(TOPIC_TEMP, buffer);
+    client.publish(TOPIC_TEMP, buffer, true);
     snprintf(buffer, sizeof(buffer), "%.1f", hum);
-    client.publish(TOPIC_HUM, buffer);
+    client.publish(TOPIC_HUM, buffer, true);
     snprintf(buffer, sizeof(buffer), "%.0f", press);
-    client.publish(TOPIC_PRESS, buffer);
+    client.publish(TOPIC_PRESS, buffer, true);
   }
   // Security events - publish only on change
   if (client.connected())
   {
     if (motionDetected != lastMotionPublished)
     {
-      client.publish(TOPIC_MOTION, motionDetected ? "DETECTED" : "quiet");
+      client.publish(TOPIC_MOTION, motionDetected ? "DETECTED" : "quiet", true);
       lastMotionPublished = motionDetected;
     }
     if (doorOpen != lastDoorPublished)
     {
-      client.publish(TOPIC_DOOR, doorOpen ? "OPEN" : "closed");
+      client.publish(TOPIC_DOOR, doorOpen ? "OPEN" : "closed", true);
       lastDoorPublished = doorOpen;
     }
     if (faceAuthorized != lastFacePublished)
     {
-      client.publish(TOPIC_FACE, faceAuthorized ? "Authorized" : "none");
+      client.publish(TOPIC_FACE, faceAuthorized ? "Authorized" : "none", true);
       lastFacePublished = faceAuthorized;
     }
     if (lockIsOpen != lastLockPublished)
     {
-      client.publish(TOPIC_LOCK, lockIsOpen ? "Unlocked" : "locked");
+      client.publish(TOPIC_LOCK, lockIsOpen ? "Unlocked" : "locked", true);
       lastLockPublished = lockIsOpen;
     }
   }
