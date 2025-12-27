@@ -28,7 +28,7 @@ static const uint32_t ENV_UPDATE_TIME = 30000;
 uint32_t lastEnvPublish = 0;
 
 /* ===== MQTT ===== */
-const char *mqtt_username = "pico_user";
+const char *mqtt_username = "pico";
 const char *mqtt_password = "123mqtt456b";
 
 #define BASE_TOPIC "smarthome/pico/"
@@ -149,7 +149,6 @@ void reconnect()
   if (client.connect("PicoClient", mqtt_username, mqtt_password, TOPIC_STATUS, 1, true, "offline"))
   {
     Serial.println("connected!");
-    // willTopic, willQos, willRetain, willMessage
     client.publish(TOPIC_STATUS, "online", true);
   }
   else
@@ -297,6 +296,17 @@ void setup()
 
 void loop()
 {
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    static uint32_t lastWiFiRetry = 0;
+    if (millis() - lastWiFiRetry > 10000)
+    {
+      lastWiFiRetry = millis();
+      Serial.println("WiFi lost - reconnecting...");
+      WiFi.disconnect();
+      WiFi.begin(ssid, password);
+    }
+  }
   // MQTT maintain
   client.loop();
 
