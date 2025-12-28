@@ -434,7 +434,6 @@ void handleDisplay()
     display.printf("Door: %s\n", doorOpen ? DOOR_OPEN "!" : DOOR_CLOSED);
     display.setCursor(0, 48);
     display.printf("FaceID: %s\n", faceAuthorized ? "Face OK" : "No face");
-    // My comment: Added WiFi and MQTT status on OLED
     display.setCursor(0, 56);
     display.printf("WiFi %s | MQTT %s",
                    WiFi.status() == WL_CONNECTED ? "OK" : "OFF",
@@ -576,7 +575,6 @@ void setup()
     }
     display.setCursor(0, 30);
     display.println("PIR calibrating...");
-    // My comment: Added network status during init
     display.setCursor(0, 45);
     display.printf("WiFi %s | MQTT %s", WiFi.status() == WL_CONNECTED ? "OK" : "OFF", client.connected() ? "OK" : "N/A");
     display.display();
