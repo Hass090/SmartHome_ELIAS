@@ -1,63 +1,79 @@
 import paho.mqtt.client as mqtt
 import mysql.connector
-import time
-
+# ================= CONFIG =================
 MQTT_BROKER = "127.0.0.1"
+MQTT_PORT = 1883
 MQTT_USER = "pico"
 MQTT_PASS = "123mqtt456b"
 BASE_TOPIC = "smarthome/pico/"
-
 DB_CONFIG = {
     "host": "localhost",
     "user": "smarthome",
     "password": "123root456maria",
-    "database": "smarthome"
+    "database": "smarthome",
+    "autocommit": True
 }
-
 db = mysql.connector.connect(**DB_CONFIG)
 cursor = db.cursor()
-
-env_data = {"temperature": None, "humidity": None, "pressure": None}
-last_env_time = 0
-ENV_WINDOW = 10
-
+env = {"temperature": None, "humidity": None, "pressure": None}
+def log_event(event_type, message):
+    cursor.execute("INSERT INTO events (type, message) VALUES (%s, %s)", (event_type, message))
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("Connected to MQTT")
+        log_event("system", "MQTT to DB restarted")
+        client.subscribe(BASE_TOPIC + "#")
 def on_message(client, userdata, msg):
-    global env_data, last_env_time
     topic = msg.topic
-    payload = msg.payload.decode()
-    print(f"{topic} → {payload}")
-
+    payload = msg.payload.decode().strip()
+    if not payload: return
+    rel = topic[len(BASE_TOPIC):]
     try:
-        if topic.startswith(BASE_TOPIC + "environment/"):
-            field = topic.split("/")[-1]
-            value = float(payload) if field != "pressure" else int(payload)
-            env_data[field] = value
-            last_env_time = time.time()
-
-            if all(v is not None for v in env_data.values()):
-                if time.time() - last_env_time < ENV_WINDOW:
-                    cursor.execute("""
-                        INSERT INTO sensors (temperature, humidity, pressure)
-                        VALUES (%s, %s, %s)
-                    """, (env_data["temperature"], env_data["humidity"], env_data["pressure"]))
-                    db.commit()
-                env_data = {"temperature": None, "humidity": None, "pressure": None}
-
-        elif topic.startswith(BASE_TOPIC + "security/"):
-            field = topic.split("/")[-1]
-            mapping = {"motion": "motion", "door": "door", "face": "face", "lock": "lock_status"}
-            db_field = mapping.get(field)
-            if db_field:
-                cursor.execute(f"INSERT INTO security_status ({db_field}) VALUES (%s)", (payload,))
-                db.commit()
-
+        # === ENVIRONMENT ===
+        if rel == "environment/temperature":
+            env["temperature"] = float(payload)
+        elif rel == "environment/humidity":
+            env["humidity"] = float(payload)
+        elif rel == "environment/pressure":
+            env["pressure"] = float(payload)
+        if rel == "environment/pressure" and all(v is not None for v in env.values()):
+            cursor.execute(
+                "INSERT INTO sensors (temperature, humidity, pressure) VALUES (%s, %s, %s)",
+                (env["temperature"], env["humidity"], env["pressure"])
+            )
+            env.update({k: None for k in env})
+        # === SECURITY ===
+        elif rel == "security/motion":
+            cursor.execute("UPDATE security_status SET motion = %s WHERE id = 1", (payload,))
+            if payload == "DETECTED":
+                log_event("alert", "Motion detected!")
+        elif rel == "security/door":
+            cursor.execute("UPDATE security_status SET door = %s WHERE id = 1", (payload,))
+            if "OPEN" in payload.upper():
+                log_event("alert", "Door/window opened!")
+        elif rel == "security/face":
+            cursor.execute("UPDATE security_status SET face = %s WHERE id = 1", (payload,))
+        elif rel == "security/lock":
+            cursor.execute("UPDATE security_status SET lock_status = %s WHERE id = 1", (payload,))
+        # === ACCESS LOGS ===
+        elif rel == "access/log":
+            cursor.execute(
+                "INSERT INTO access_logs (method, result, source) VALUES (%s, %s, %s)",
+                ("RFID+Face", payload, "pico")
+            )
+            log_event("access", payload)
+        # === ERRORS ===
+        elif rel == "error":
+            log_event("system_error", payload)
+        elif rel == "security/face_event":
+            log_event("detection", payload)
+        elif rel == "security/lock_event":
+            log_event("system", payload)
     except Exception as e:
-        print(f"Error: {e}")
-
-client = mqtt.Client(client_id="mqtt2db", protocol=mqtt.MQTTv5)
+        log_event("error", f"MQTT error: {str(e)}")
+client = mqtt.Client(client_id="mqtt2db")
 client.username_pw_set(MQTT_USER, MQTT_PASS)
+client.on_connect = on_connect
 client.on_message = on_message
-client.connect(MQTT_BROKER, 1883)
-client.subscribe("smarthome/pico/#")
-print("MQTT → DB started")
+client.connect(MQTT_BROKER, MQTT_PORT)
 client.loop_forever()
