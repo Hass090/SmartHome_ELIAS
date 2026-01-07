@@ -129,6 +129,7 @@ volatile uint32_t lastIRQTime = 0;
 bool motionDetected = false;
 uint32_t lastMotionTime = 0;
 uint32_t lastSensorUpdate = 0;
+
 String systemStatus = "OK";
 
 /* ===== PIR interrupt ===== */
