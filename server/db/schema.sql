@@ -1,4 +1,4 @@
-USE smarthome;
+USE smarthome_db;
 
 DROP TABLE IF EXISTS sensors;
 CREATE TABLE sensors (
