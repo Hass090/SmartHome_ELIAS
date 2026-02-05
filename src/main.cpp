@@ -23,9 +23,9 @@
 #define ACCESS_DENIED_UNKNOWN "DENIED: Unknown RFID"
 
 HUSKYLENS huskylens;
-const char *ssid = "NOS-ADA4";
-const char *password = "R6H44EEE";
-const char *mqtt_server = "192.168.1.15";
+const char *ssid = "Clickfiel 5HGz";
+const char *password = "clickfiel2001";
+const char *mqtt_server = "192.168.1.145";
 WiFiClient wificlient;
 PubSubClient client(wificlient);
 
@@ -165,7 +165,7 @@ void reconnect()
   }
   else
   {
-    if (millis() - start > 5000)
+    if (millis() - start > 30000)
     {
       Serial.println("Timeout");
       systemStatus = "MQTT Timeout";
