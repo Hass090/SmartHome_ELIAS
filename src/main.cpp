@@ -23,7 +23,7 @@
 #define ACCESS_DENIED_UNKNOWN "DENIED: Unknown RFID"
 
 HUSKYLENS huskylens;
-const char *ssid = "Clickfiel 5HGz";
+const char *ssid = "Clickfiel 2.4GHz";
 const char *password = "clickfiel2001";
 const char *mqtt_server = "192.168.1.145";
 WiFiClient wificlient;
