@@ -422,7 +422,7 @@ void handleDisplay()
     press = bme.readPressure() / 100.0F;
     display.clearDisplay();
     display.setCursor(0, 0);
-    display.println("Smart Home Elias");
+    display.println("SmartHome_ELIAS");
     display.setCursor(0, 8);
     display.printf("Temp: %.1f C\n", temp);
     display.setCursor(0, 16);
@@ -464,7 +464,7 @@ void setup()
 {
   Serial.begin(115200);
   delay(2000);
-  Serial.println("Smart Home Elias");
+  Serial.println("SmartHome_ELIAS");
   /* Connecting to Wi-Fi */
   WiFi.begin(ssid, password);
   uint32_t wifiTimeout = millis() + 20000;
@@ -564,7 +564,7 @@ void setup()
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
-    display.println("Smart Home Elias");
+    display.println("SmartHome_ELIAS");
     display.setCursor(0, 15);
     if (allOk)
     {
