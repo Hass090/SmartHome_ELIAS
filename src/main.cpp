@@ -49,6 +49,7 @@ const char *mqtt_password = "123mqtt456b";
 #define TOPIC_LOCK BASE_TOPIC "security/lock"
 #define TOPIC_STATUS BASE_TOPIC "status/connection"
 #define TOPIC_ACCESS BASE_TOPIC "access/log"
+#define TOPIC_CONTROL_DOOR BASE_TOPIC "control/door"
 #define TOPIC_ERROR BASE_TOPIC "error"
 
 // Heartbeat to keep MQTT alive and confirm status
@@ -156,12 +157,17 @@ void reconnect()
 {
   if (WiFi.status() != WL_CONNECTED)
     return;
+
   Serial.print("\nMQTT reconnect... ");
   unsigned long start = millis();
+
   if (client.connect("PicoClient", mqtt_username, mqtt_password, TOPIC_STATUS, 1, true, "offline"))
   {
     Serial.println("OK");
     client.publish(TOPIC_STATUS, "online", true);
+
+    client.subscribe(TOPIC_CONTROL_DOOR);
+    Serial.println("Subscribed to: " + String(TOPIC_CONTROL_DOOR));
   }
   else
   {
@@ -212,6 +218,42 @@ void handleMQTT()
     {
       lastHeartbeat = millis();
       client.publish(TOPIC_STATUS, "online", true);
+    }
+  }
+}
+void callback(char *topic, byte *payload, unsigned int length)
+{
+  String message = "";
+  for (unsigned int i = 0; i < length; i++)
+  {
+    message += (char)payload[i];
+  }
+
+  Serial.print("MQTT callback - topic: ");
+  Serial.print(topic);
+  Serial.print(" | message: ");
+  Serial.println(message);
+
+  if (String(topic) == TOPIC_CONTROL_DOOR)
+  {
+    if (message == "OPEN")
+    {
+      Serial.println("Open the door");
+      doorServo.write(LOCK_OPEN_A);
+      lockIsOpen = true;
+      lockOpenTime = millis();
+      client.publish(TOPIC_DOOR, DOOR_OPEN, true);
+    }
+    else if (message == "CLOSED" || message == "close")
+    {
+      Serial.println("Close the door");
+      doorServo.write(LOCK_CLOSE_A);
+      lockIsOpen = false;
+      client.publish(TOPIC_DOOR, DOOR_CLOSED, true);
+    }
+    else
+    {
+      Serial.println("Unknown command: " + message);
     }
   }
 }
@@ -479,6 +521,8 @@ void setup()
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
     client.setServer(mqtt_server, 1883);
+    client.setCallback(callback);
+    reconnect();
   }
   else
   {
