@@ -47,7 +47,8 @@ def on_message(client, userdata, msg):
     if not payload:
         return
     print(f"→ {topic}: {payload}")
-    rel_topic = topic[len(BASE_TOPIC):]
+    rel_topic = topic[len(BASE_TOPIC):].lower()
+    payload_upper = payload.upper()
     try:
         if rel_topic == "environment/temperature":
             env["temperature"] = float(payload)
@@ -67,17 +68,19 @@ def on_message(client, userdata, msg):
         elif rel_topic == "security/motion":
             cursor.execute("UPDATE security_status SET motion = %s WHERE id = 1", (payload,))
             db.commit()
-            if payload == "DETECTED":
+            if payload_upper == "DETECTED":
                 log_event("alert", "Motion detected!")
         elif rel_topic == "security/door":
-            cursor.execute("UPDATE security_status SET door = %s WHERE id = 1", (payload,))
+            cursor.execute("UPDATE security_status SET door = %s WHERE id = 1", (payload.lower(),))
             db.commit()
-            if "OPEN" in payload.upper():
+            if "OPEN" in payload_upper:
                 log_event("alert", "Door opened!")
+            else:
+                log_event("alert", "Door closed!")
         elif rel_topic == "security/face":
             cursor.execute("UPDATE security_status SET face = %s WHERE id = 1", (payload,))
             db.commit()
-            if payload == "Authorized":
+            if payload_upper == "AUTHORIZED":
                 log_event("access", "Face authorized")
         elif rel_topic == "security/lock":
             cursor.execute("UPDATE security_status SET lock_status = %s WHERE id = 1", (payload,))
@@ -91,6 +94,8 @@ def on_message(client, userdata, msg):
             log_event("access", payload)
         elif rel_topic in ("error", "security/face_event", "security/lock_event"):
             log_event("system" if "error" in rel_topic else "detection", payload)
+        elif rel_topic == "control/door":
+            log_event("control", f"Door command: {payload}")
     except Exception as e:
         log_event("error", f"MQTT processing error: {str(e)}")
         print("Error:", e)
