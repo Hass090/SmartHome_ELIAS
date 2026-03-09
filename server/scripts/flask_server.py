@@ -60,7 +60,6 @@ def login():
         password = data.get('password')
         if not email or not password:
             return jsonify({"error": "Email and password required"}), 400
-
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
@@ -70,12 +69,10 @@ def login():
         user = cursor.fetchone()
         cursor.close()
         conn.close()
-
         if user:
             access_token = create_access_token(identity=email)
             logger.info(f"Successful login: {email}")
             return jsonify({"token": access_token}), 200
-
         logger.warning(f"Failed login attempt: {email}")
         return jsonify({"error": "Invalid email or password"}), 401
     except Error as e:
@@ -107,7 +104,6 @@ def get_status():
         security = cursor.fetchone() or {}
         cursor.close()
         conn.close()
-
         response = {
             "temperature": sensors.get('temperature'),
             "humidity": sensors.get('humidity'),
@@ -134,7 +130,6 @@ def get_history():
         limit = request.args.get('limit', default=50, type=int)
         offset = request.args.get('offset', default=0, type=int)
         event_type = request.args.get('type', default=None, type=str)
-
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         query = "SELECT timestamp, type, message FROM events ORDER BY timestamp DESC LIMIT %s OFFSET %s"
@@ -169,18 +164,14 @@ def register_token():
         if not fcm_token:
             logger.error("register_token: FCM token required")
             return jsonify({"error": "FCM token required"}), 400
-
         user_email = get_jwt_identity()
         device_id = data.get('device_id', 'default_flutter_device')
-
-        logger.info(f"register_token: Starting for user {user_email}, token length: {len(fcm_token)} chars")
+        logger.info(f"register_token: Starting for user {user_email}")
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-
-        deleted = cursor.execute("DELETE FROM push_tokens WHERE user_email = %s", (user_email,))
+        cursor.execute("DELETE FROM push_tokens WHERE user_email = %s", (user_email,))
         logger.info(f"register_token: Deleted {cursor.rowcount} old tokens for {user_email}")
-
         cursor.execute("""
             INSERT INTO push_tokens (user_email, fcm_token, device_id, updated_at)
             VALUES (%s, %s, %s, NOW())
@@ -188,7 +179,6 @@ def register_token():
         conn.commit()
         cursor.close()
         conn.close()
-
         logger.info(f"register_token: SUCCESS - New FCM token saved for {user_email}")
         return jsonify({"status": "Token registered successfully"}), 200
     except Error as e:
@@ -196,6 +186,36 @@ def register_token():
         return jsonify({"error": "Database error"}), 500
     except Exception as e:
         logger.error(f"Unexpected error in /register_token: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/unregister_token', methods=['POST'])
+@jwt_required()
+def unregister_token():
+    """Unregister FCM token when user disables notifications"""
+    try:
+        user_email = get_jwt_identity()
+        data = request.get_json(silent=True) or {}
+        fcm_token = data.get('fcm_token')
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if fcm_token:
+            cursor.execute("DELETE FROM push_tokens WHERE user_email = %s AND fcm_token = %s", (user_email, fcm_token))
+        else:
+            cursor.execute("DELETE FROM push_tokens WHERE user_email = %s", (user_email,))
+        
+        deleted = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        logger.info(f"unregister_token: SUCCESS - Deleted {deleted} token(s) for {user_email}")
+        return jsonify({"status": "Token unregistered successfully"}), 200
+    except Error as e:
+        logger.error(f"Database error in /unregister_token: {e}")
+        return jsonify({"error": "Database error"}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error in /unregister_token: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route('/test_push', methods=['POST'])
@@ -219,24 +239,16 @@ def send_push_to_user(user_email, title, body):
         tokens = [row['fcm_token'] for row in cursor.fetchall()]
         cursor.close()
         conn.close()
-
         if not tokens:
             logger.warning(f"No FCM tokens found for user {user_email}")
             return
-
         message = messaging.MulticastMessage(
-            notification=messaging.Notification(
-                title=title,
-                body=body,
-            ),
+            notification=messaging.Notification(title=title, body=body),
             tokens=tokens,
-            data={
-                'type': 'event',
-                'timestamp': datetime.now().isoformat()
-            }
+            data={'type': 'event', 'timestamp': datetime.now().isoformat()}
         )
         response = messaging.send_each_for_multicast(message)
-        logger.info(f"Push sent to {user_email}: {response.success_count} success, {response.failure_count} failed")
+        logger.info(f"Push sent to {user_email}: {response.success_count} success")
     except Exception as e:
         logger.error(f"Failed to send push to {user_email}: {e}")
 
