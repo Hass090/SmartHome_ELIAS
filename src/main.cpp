@@ -270,26 +270,33 @@ void callback(char *topic, byte *payload, unsigned int length)
 
 void handleEnvironment()
 {
-  if (client.connected() && millis() - lastEnvPublish >= ENV_UPDATE_TIME)
+  if (!client.connected())
+    return;
+
+  if (millis() - lastEnvPublish >= ENV_UPDATE_TIME)
   {
     lastEnvPublish = millis();
+
     float newTemp = bme.readTemperature();
     float newHum = bme.readHumidity();
     float newPress = bme.readPressure() / 100.0F;
-    // Only ship if the change is more than the threshold.
-    if (abs(newTemp - temp) > 0.3f || abs(newHum - hum) > 1.0f || abs(newPress - press) > 2.0f)
-    {
-      temp = newTemp;
-      hum = newHum;
-      press = newPress;
-      char buffer[64];
-      snprintf(buffer, sizeof(buffer), "%.1f", temp);
-      client.publish(TOPIC_TEMP, buffer, true);
-      snprintf(buffer, sizeof(buffer), "%.1f", hum);
-      client.publish(TOPIC_HUM, buffer, true);
-      snprintf(buffer, sizeof(buffer), "%.0f", press);
-      client.publish(TOPIC_PRESS, buffer, true);
-    }
+
+    temp = newTemp;
+    hum = newHum;
+    press = newPress;
+
+    char buffer[64];
+
+    snprintf(buffer, sizeof(buffer), "%.1f", temp);
+    client.publish(TOPIC_TEMP, buffer, true);
+
+    snprintf(buffer, sizeof(buffer), "%.1f", hum);
+    client.publish(TOPIC_HUM, buffer, true);
+
+    snprintf(buffer, sizeof(buffer), "%.0f", press);
+    client.publish(TOPIC_PRESS, buffer, true);
+
+    Serial.printf("Published → %.1f°C | %.1f%% | %.0f hPa\n", temp, hum, press);
   }
 }
 
