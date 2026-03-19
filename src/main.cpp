@@ -77,7 +77,10 @@ bool buzzerActive = 0;
 /* ===== LEDs ===== */
 #define B_LED_PIN 21
 #define Y_LED_PIN 20
-#define TEMP_HOT 24.0 // °C
+#define TEMP_HOT 22.0 // °C
+
+/* ===== FAN ===== */
+#define FAN_PIN 16
 
 /* ===== REED ===== */
 #define REED_PIN 9
@@ -474,14 +477,16 @@ void handleDisplay()
                    client.connected() ? "OK" : "OFF");
     display.display();
 
-    /*High temperature(=> TEMP_HOT) = Yellow LED turns on*/
+    /*High temperature(=> TEMP_HOT) = Yellow LED and Fan turns on*/
     if (temp > TEMP_HOT)
     {
       digitalWrite(Y_LED_PIN, HIGH);
+      digitalWrite(FAN_PIN, HIGH);
     }
     else
     {
       digitalWrite(Y_LED_PIN, LOW);
+      digitalWrite(FAN_PIN, LOW); 
     }
 
     Serial.printf(
@@ -542,6 +547,10 @@ void setup()
   pinMode(Y_LED_PIN, OUTPUT);
   digitalWrite(B_LED_PIN, LOW);
   digitalWrite(Y_LED_PIN, LOW);
+
+  /* FAN */
+  pinMode(FAN_PIN, OUTPUT);
+  digitalWrite(FAN_PIN, LOW);
 
   /* REED */
   pinMode(REED_PIN, INPUT_PULLUP);
