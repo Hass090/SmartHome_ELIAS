@@ -52,6 +52,8 @@ const char *mqtt_password = "123mqtt456b";
 #define TOPIC_ACCESS BASE_TOPIC "access/log"
 #define TOPIC_CONTROL_DOOR BASE_TOPIC "control/door"
 #define TOPIC_FACE_EVENT BASE_TOPIC "security/face_event"
+#define TOPIC_CONTROL_FAN BASE_TOPIC "control/fan"
+#define TOPIC_FAN BASE_TOPIC "environment/fan"
 #define TOPIC_ERROR BASE_TOPIC "error"
 // Heartbeat to keep MQTT alive and confirm status
 #define HEARTBEAT_TIME 20000
@@ -81,6 +83,12 @@ bool buzzerActive = 0;
 
 /* ===== FAN ===== */
 #define FAN_PIN 16
+bool fanOn = false;
+bool manualFanMode = false;
+static bool lastFanPublished = false;
+bool autoModeEnabled = true;
+uint32_t lastManualOffTime = 0;
+const uint32_t MANUAL_OFF_HOLD_MS = 600000;
 
 /* ===== REED ===== */
 #define REED_PIN 9
@@ -111,7 +119,7 @@ static bool lastLockPublished = false;
 uint32_t lastFaceTime = 0;
 const uint32_t FACE_WINDOW = 3000;
 bool faceAuthorized = false;
-static bool lastFacePublished = false; // добавлено для публикации состояния лица
+static bool lastFacePublished = false;
 
 /* ===== PIR ===== */
 #define PIR_PIN 19
@@ -167,7 +175,8 @@ void reconnect()
     client.publish(TOPIC_STATUS, "online", true);
     client.subscribe(TOPIC_CONTROL_DOOR);
     client.subscribe(TOPIC_FACE_EVENT);
-    Serial.println("Subscribed to: " + String(TOPIC_CONTROL_DOOR) + " and " + String(TOPIC_FACE_EVENT));
+    client.subscribe(TOPIC_CONTROL_FAN);
+    Serial.println("Subscribed to: " + String(TOPIC_CONTROL_DOOR) + "," + String(TOPIC_FACE_EVENT) + " and " + String(TOPIC_CONTROL_FAN));
   }
   else
   {
@@ -267,6 +276,47 @@ void callback(char *topic, byte *payload, unsigned int length)
       faceAuthorized = true;
       lastFaceTime = millis();
       Serial.println("Face authorized from Pi5!");
+    }
+  }
+  else if (topicStr == TOPIC_CONTROL_FAN)
+  {
+    Serial.print("Fan command: ");
+    Serial.println(message);
+
+    if (message == "AUTO")
+    {
+      autoModeEnabled = true;
+      manualFanMode = false;
+      lastManualOffTime = 0;
+      Serial.println(">>> Switched to AUTO mode");
+      client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
+      client.publish(BASE_TOPIC "environment/fan_mode", "AUTO", true);
+    }
+    else if (message == "MANUAL")
+    {
+      autoModeEnabled = false;
+      manualFanMode = true;
+      Serial.println(">>> Switched to MANUAL mode");
+      client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
+      client.publish(BASE_TOPIC "environment/fan_mode", "MANUAL", true);
+    }
+    else if (!autoModeEnabled)
+    {
+      if (message == "ON")
+      {
+        digitalWrite(FAN_PIN, HIGH);
+        digitalWrite(Y_LED_PIN, HIGH);
+        fanOn = true;
+        client.publish(TOPIC_FAN, "ON", true);
+      }
+      else if (message == "OFF")
+      {
+        digitalWrite(FAN_PIN, LOW);
+        digitalWrite(Y_LED_PIN, LOW);
+        fanOn = false;
+        lastManualOffTime = millis();
+        client.publish(TOPIC_FAN, "OFF", true);
+      }
     }
   }
 }
@@ -478,16 +528,30 @@ void handleDisplay()
     display.display();
 
     /*High temperature(=> TEMP_HOT) = Yellow LED and Fan turns on*/
-    if (temp > TEMP_HOT)
+    bool autoShouldOn = (temp > TEMP_HOT);
+
+    static bool lastFanPublished = false;
+
+    if (autoModeEnabled)
     {
-      digitalWrite(Y_LED_PIN, HIGH);
-      digitalWrite(FAN_PIN, HIGH);
+      bool should = autoShouldOn;
+      digitalWrite(FAN_PIN, should ? HIGH : LOW);
+      digitalWrite(Y_LED_PIN, should ? HIGH : LOW);
+      fanOn = should;
     }
     else
     {
-      digitalWrite(Y_LED_PIN, LOW);
-      digitalWrite(FAN_PIN, LOW); 
     }
+    if (fanOn != lastFanPublished && client.connected())
+    {
+      client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
+      lastFanPublished = fanOn;
+    }
+    Serial.printf("Fan: %s | AutoMode: %s | Temp: %.1f > %.1f ? %s\n",
+                  fanOn ? "ON" : "OFF",
+                  autoModeEnabled ? "YES" : "NO",
+                  temp, TEMP_HOT,
+                  autoShouldOn ? "YES" : "NO");
 
     Serial.printf(
         "Temp: %.1f C | Hum: %.1f %% | Press: %.0f hPa | Movements: %s | Door: %s | FaceID: %s | WiFi: %s | MQTT: %s | Status: %s\n",
@@ -564,6 +628,7 @@ void setup()
   if (WiFi.status() == WL_CONNECTED)
   {
     reconnect(); // Initial connect
+    client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
   }
 
   /* ===== Final components check ===== */
