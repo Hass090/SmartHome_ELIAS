@@ -54,6 +54,8 @@ const char *mqtt_password = "123mqtt456b";
 #define TOPIC_FACE_EVENT BASE_TOPIC "security/face_event"
 #define TOPIC_CONTROL_FAN BASE_TOPIC "control/fan"
 #define TOPIC_FAN BASE_TOPIC "environment/fan"
+#define TOPIC_CONTROL_LIGHT BASE_TOPIC "control/light"
+#define TOPIC_LIGHT BASE_TOPIC "environment/light"
 #define TOPIC_ERROR BASE_TOPIC "error"
 // Heartbeat to keep MQTT alive and confirm status
 #define HEARTBEAT_TIME 20000
@@ -74,11 +76,13 @@ Adafruit_BME280 bme;
 #define BUZZER_DUR 500
 #define BUZZER_FREQ 1000
 uint32_t buzzerOffTime = 0;
-bool buzzerActive = 0;
+bool buzzerActive = false;
 
 /* ===== LEDs ===== */
 #define B_LED_PIN 21
 #define Y_LED_PIN 20
+#define RGB_LED_PIN 17
+bool rgbLedOn = false;
 #define TEMP_HOT 22.0 // °C
 
 /* ===== FAN ===== */
@@ -166,7 +170,6 @@ void reconnect()
 {
   if (WiFi.status() != WL_CONNECTED)
     return;
-
   Serial.print("\nMQTT reconnect... ");
   unsigned long start = millis();
   if (client.connect("PicoClient", mqtt_username, mqtt_password, TOPIC_STATUS, 1, true, "offline"))
@@ -176,7 +179,8 @@ void reconnect()
     client.subscribe(TOPIC_CONTROL_DOOR);
     client.subscribe(TOPIC_FACE_EVENT);
     client.subscribe(TOPIC_CONTROL_FAN);
-    Serial.println("Subscribed to: " + String(TOPIC_CONTROL_DOOR) + "," + String(TOPIC_FACE_EVENT) + " and " + String(TOPIC_CONTROL_FAN));
+    client.subscribe(TOPIC_CONTROL_LIGHT);
+    Serial.println("Subscribed to: " + String(TOPIC_CONTROL_DOOR) + "," + String(TOPIC_FACE_EVENT) + "," + String(TOPIC_CONTROL_FAN) + "," + String(TOPIC_CONTROL_LIGHT));
   }
   else
   {
@@ -224,7 +228,6 @@ void handleMQTT()
   }
   else
   {
-    // Heartbeat
     if (millis() - lastHeartbeat > HEARTBEAT_TIME)
     {
       lastHeartbeat = millis();
@@ -282,7 +285,6 @@ void callback(char *topic, byte *payload, unsigned int length)
   {
     Serial.print("Fan command: ");
     Serial.println(message);
-
     if (message == "AUTO")
     {
       autoModeEnabled = true;
@@ -319,36 +321,47 @@ void callback(char *topic, byte *payload, unsigned int length)
       }
     }
   }
+  else if (topicStr == TOPIC_CONTROL_LIGHT)
+  {
+    Serial.print("Light command: ");
+    Serial.println(message);
+    if (message == "ON")
+    {
+      digitalWrite(RGB_LED_PIN, HIGH);
+      rgbLedOn = true;
+      client.publish(TOPIC_LIGHT, "ON", true);
+      Serial.println("RGB LED ON from app");
+    }
+    else if (message == "OFF")
+    {
+      digitalWrite(RGB_LED_PIN, LOW);
+      rgbLedOn = false;
+      client.publish(TOPIC_LIGHT, "OFF", true);
+      Serial.println("RGB LED OFF from app");
+    }
+  }
 }
 
 void handleEnvironment()
 {
   if (!client.connected())
     return;
-
   if (millis() - lastEnvPublish >= ENV_UPDATE_TIME)
   {
     lastEnvPublish = millis();
-
     float newTemp = bme.readTemperature();
     float newHum = bme.readHumidity();
     float newPress = bme.readPressure() / 100.0F;
-
     temp = newTemp;
     hum = newHum;
     press = newPress;
-
     char buffer[64];
-
     snprintf(buffer, sizeof(buffer), "%.1f", temp);
     client.publish(TOPIC_TEMP, buffer, true);
-
     snprintf(buffer, sizeof(buffer), "%.1f", hum);
     client.publish(TOPIC_HUM, buffer, true);
-
     snprintf(buffer, sizeof(buffer), "%.0f", press);
     client.publish(TOPIC_PRESS, buffer, true);
-
     Serial.printf("Published → %.1f°C | %.1f%% | %.0f hPa\n", temp, hum, press);
   }
 }
@@ -379,31 +392,30 @@ void handleSecurity()
       lastLockPublished = lockIsOpen;
     }
   }
-  /* Handle PIR event + buzzer + blue LED */
+
   if (motionIRQ)
   {
     motionIRQ = false;
     motionDetected = true;
     lastMotionTime = millis();
-    /* Turn on the buzzer and blue LED */
     digitalWrite(B_LED_PIN, HIGH);
     tone(BUZZER_PIN, BUZZER_FREQ);
     buzzerActive = true;
     buzzerOffTime = millis() + BUZZER_DUR;
   }
-  /* Turn off the buzzer and blue LED */
+
   if (buzzerActive && millis() >= buzzerOffTime)
   {
     noTone(BUZZER_PIN);
     digitalWrite(B_LED_PIN, LOW);
     buzzerActive = false;
   }
-  /* Resetting the movement indication after 2 sec */
+
   if (motionDetected && millis() - lastMotionTime > 2000)
   {
     motionDetected = false;
   }
-  /* reed + buzzer */
+
   int reedState = digitalRead(REED_PIN);
   if (reedState != lastReedState)
   {
@@ -429,10 +441,9 @@ void handleSecurity()
     }
   }
   lastReedState = reedState;
-  // Checks if a new card has been presented to the reader
+
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial())
   {
-    // Prints the card's UID to the Serial Monitor
     Serial.print("Card UID: ");
     for (byte i = 0; i < mfrc522.uid.size; i++)
     {
@@ -440,23 +451,20 @@ void handleSecurity()
       Serial.print(mfrc522.uid.uidByte[i], HEX);
     }
     Serial.println();
-    // Check if this is an authorized card
+
     if (checkUID())
     {
-      // Check if there was a face
       if (faceAuthorized && (millis() - lastFaceTime < FACE_WINDOW))
       {
         Serial.println("ACCESS GRANTED");
         doorServo.write(LOCK_OPEN_A);
         lockIsOpen = true;
         lockOpenTime = millis();
-        // Pleasant audio feedback
         tone(BUZZER_PIN, 1500, 200);
         delay(200);
         tone(BUZZER_PIN, 2000, 200);
         delay(200);
         tone(BUZZER_PIN, 1500, 200);
-        // Publish to MQTT for DB logging
         if (client.connected())
           client.publish(TOPIC_ACCESS, ACCESS_GRANTED, true);
       }
@@ -464,7 +472,6 @@ void handleSecurity()
       {
         Serial.println("RFID OK but no recent face - ACCESS DENIED");
         tone(BUZZER_PIN, 500, 800);
-        // Publish denial reason
         if (client.connected())
           client.publish(TOPIC_ACCESS, ACCESS_DENIED_NO_FACE, true);
       }
@@ -473,14 +480,13 @@ void handleSecurity()
     {
       Serial.println("Unknown card - ACCESS DENIED");
       tone(BUZZER_PIN, 300, 1000);
-      // Publish denial reason
       if (client.connected())
         client.publish(TOPIC_ACCESS, ACCESS_DENIED_UNKNOWN, true);
     }
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
   }
-  // Automatically close the lock after OPEN_DUR
+
   if (lockIsOpen && millis() - lockOpenTime >= OPEN_DUR)
   {
     doorServo.write(LOCK_CLOSE_A);
@@ -491,7 +497,7 @@ void handleSecurity()
       client.publish(BASE_TOPIC "security/lock_event", "Lock closed automatically", true);
     }
   }
-  // Face timeout - reset authorization after window
+
   if (faceAuthorized && millis() - lastFaceTime > FACE_WINDOW)
   {
     faceAuthorized = false;
@@ -506,6 +512,7 @@ void handleDisplay()
     temp = bme.readTemperature();
     hum = bme.readHumidity();
     press = bme.readPressure() / 100.0F;
+
     display.clearDisplay();
     display.setCursor(0, 0);
     display.println("SmartHome_ELIAS");
@@ -527,9 +534,7 @@ void handleDisplay()
                    client.connected() ? "OK" : "OFF");
     display.display();
 
-    /*High temperature(=> TEMP_HOT) = Yellow LED and Fan turns on*/
     bool autoShouldOn = (temp > TEMP_HOT);
-
     static bool lastFanPublished = false;
 
     if (autoModeEnabled)
@@ -539,14 +544,13 @@ void handleDisplay()
       digitalWrite(Y_LED_PIN, should ? HIGH : LOW);
       fanOn = should;
     }
-    else
-    {
-    }
+
     if (fanOn != lastFanPublished && client.connected())
     {
       client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
       lastFanPublished = fanOn;
     }
+
     Serial.printf("Fan: %s | AutoMode: %s | Temp: %.1f > %.1f ? %s\n",
                   fanOn ? "ON" : "OFF",
                   autoModeEnabled ? "YES" : "NO",
@@ -571,7 +575,6 @@ void setup()
   delay(2000);
   Serial.println("SmartHome_ELIAS");
 
-  /* Connecting to Wi-Fi */
   WiFi.begin(ssid, password);
   uint32_t wifiTimeout = millis() + 20000;
   while (WiFi.status() != WL_CONNECTED && millis() < wifiTimeout)
@@ -594,48 +597,41 @@ void setup()
     systemStatus = "WiFi Failed";
   }
 
-  /* PIR */
   pinMode(PIR_PIN, INPUT_PULLDOWN);
-
-  /* I2C */
   Wire.setSDA(I2C_SDA);
   Wire.setSCL(I2C_SCL);
   Wire.begin();
 
-  /* BUZZER */
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 
-  /* LEDs */
   pinMode(B_LED_PIN, OUTPUT);
   pinMode(Y_LED_PIN, OUTPUT);
   digitalWrite(B_LED_PIN, LOW);
   digitalWrite(Y_LED_PIN, LOW);
 
-  /* FAN */
+  pinMode(RGB_LED_PIN, OUTPUT);
+  digitalWrite(RGB_LED_PIN, LOW);
+
   pinMode(FAN_PIN, OUTPUT);
   digitalWrite(FAN_PIN, LOW);
 
-  /* REED */
   pinMode(REED_PIN, INPUT_PULLUP);
 
-  /* SERVO */
   doorServo.attach(SERVO_PIN);
   doorServo.write(LOCK_CLOSE_A);
   delay(500);
 
-  // Try initial MQTT connect if WiFi OK
   if (WiFi.status() == WL_CONNECTED)
   {
-    reconnect(); // Initial connect
+    reconnect();
     client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
+    client.publish(TOPIC_LIGHT, rgbLedOn ? "ON" : "OFF", true);
   }
 
-  /* ===== Final components check ===== */
   Serial.println("Checking all components...");
   bool allOk = true;
 
-  // OLED
   bool oledOk = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   if (!oledOk)
   {
@@ -643,14 +639,12 @@ void setup()
     allOk = false;
   }
 
-  // BME280
   if (!bme.begin(0x77))
   {
     Serial.println("BME280 not detected!");
     allOk = false;
   }
 
-  // RFID
   SPI.setRX(4);
   SPI.setTX(7);
   SPI.setSCK(6);
@@ -673,7 +667,6 @@ void setup()
     systemStatus = "Components Failed";
   }
 
-  // Shows whether the components passed the test (output to OLED)
   if (oledOk)
   {
     display.clearDisplay();
@@ -697,7 +690,6 @@ void setup()
     display.display();
   }
 
-  // PIR calibration
   Serial.println("PIR calibration...");
   delay(PIR_CALIBRATION_TIME);
   attachInterrupt(digitalPinToInterrupt(PIR_PIN), pirISR, RISING);
@@ -712,7 +704,6 @@ void loop()
   handleSecurity();
   handleDisplay();
 
-  // If components failed in setup, publish error once connected
   static bool errorPublished = false;
   if (client.connected() && systemStatus == "Components Failed" && !errorPublished)
   {
@@ -720,7 +711,6 @@ void loop()
     errorPublished = true;
   }
 
-  // If WiFi failed in setup, publish error once connected
   static bool wifiErrorPublished = false;
   if (client.connected() && systemStatus == "WiFi Failed" && !wifiErrorPublished)
   {
