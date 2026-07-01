@@ -62,5 +62,6 @@ CREATE TABLE IF NOT EXISTS push_tokens (
     fcm_token TEXT NOT NULL,
     device_id VARCHAR(100) DEFAULT 'default',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_token_per_user_device (user_email, device_id)
-);
+    UNIQUE KEY unique_token_per_user_device (user_email, device_id),
+    FOREIGN KEY (user_email) REFERENCES users(email) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
