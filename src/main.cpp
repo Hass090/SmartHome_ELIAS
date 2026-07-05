@@ -88,12 +88,9 @@ Adafruit_BME280 bme;
 uint32_t buzzerOffTime = 0;
 bool buzzerActive = false;
 
-/* ===== LEDs ===== */
-#define B_LED_PIN 21
-#define Y_LED_PIN 20
+/* ===== LED===== */
 #define RGB_LED_PIN 17
 bool rgbLedOn = false;
-#define TEMP_HOT 32.0
 
 /* ===== FAN ===== */
 #define FAN_PIN 16
@@ -102,6 +99,8 @@ bool manualFanMode = false;
 static bool lastFanPublished = false;
 bool autoModeEnabled = true;
 uint32_t lastManualOffTime = 0;
+#define TEMP_HOT 32.0
+#define TEMP_COLD 31.5
 const uint32_t MANUAL_OFF_HOLD_MS = 600000;
 
 /* ===== REED ===== */
@@ -306,14 +305,12 @@ void callback(char *topic, byte *payload, unsigned int length)
       if (message == "ON")
       {
         digitalWrite(FAN_PIN, HIGH);
-        digitalWrite(Y_LED_PIN, HIGH);
         fanOn = true;
         client.publish(TOPIC_FAN, "ON", true);
       }
       else if (message == "OFF")
       {
         digitalWrite(FAN_PIN, LOW);
-        digitalWrite(Y_LED_PIN, LOW);
         fanOn = false;
         lastManualOffTime = millis();
         client.publish(TOPIC_FAN, "OFF", true);
@@ -395,7 +392,6 @@ void handleSecurity()
     lastMotionTime = millis();
     if (securityArmed && (millis() - armedTime > EXIT_DELAY_MS))
     {
-      digitalWrite(B_LED_PIN, HIGH);
       tone(BUZZER_PIN, BUZZER_FREQ);
       buzzerActive = true;
       buzzerOffTime = millis() + BUZZER_DUR;
@@ -405,7 +401,6 @@ void handleSecurity()
   if (buzzerActive && millis() >= buzzerOffTime)
   {
     noTone(BUZZER_PIN);
-    digitalWrite(B_LED_PIN, LOW);
     buzzerActive = false;
   }
 
@@ -598,14 +593,18 @@ void handleDisplay()
 
     display.display();
 
-    // Climate automation logic rules (Auto-switch control loops)
-    bool autoShouldOn = (temp > TEMP_HOT);
+    // Climate automation logic rules (Auto-switch control loops with hysteresis)
     if (autoModeEnabled)
     {
-      bool should = autoShouldOn;
-      digitalWrite(FAN_PIN, should ? HIGH : LOW);
-      digitalWrite(Y_LED_PIN, should ? HIGH : LOW);
-      fanOn = should;
+      if (temp >= TEMP_HOT)
+      {
+        fanOn = true;
+      }
+      else if (temp <= TEMP_COLD)
+      {
+        fanOn = false;
+      }
+      digitalWrite(FAN_PIN, fanOn ? HIGH : LOW);
     }
 
     if (fanOn != lastFanPublished && client.connected())
@@ -645,10 +644,6 @@ void setup()
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  pinMode(B_LED_PIN, OUTPUT);
-  digitalWrite(B_LED_PIN, LOW);
-  pinMode(Y_LED_PIN, OUTPUT);
-  digitalWrite(Y_LED_PIN, LOW);
   pinMode(RGB_LED_PIN, OUTPUT);
   digitalWrite(RGB_LED_PIN, LOW);
   pinMode(FAN_PIN, OUTPUT);
