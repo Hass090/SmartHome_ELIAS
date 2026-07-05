@@ -32,3 +32,5 @@ This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**
 * **Source Code Must Be Shared:** Anyone modifying or distributing this software must open-source their changes under the same GPL-3.0 license.
 * **No Closed-Source Commercialization:** Copying this code into a closed, proprietary application for commercial sales is strictly prohibited.
 * **Attribution:** Any derivative works must credit the original author (**Hass**).
+
+See the [LICENSE](LICENSE) file for the full text.
