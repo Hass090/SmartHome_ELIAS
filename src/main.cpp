@@ -57,7 +57,6 @@ const char *mqtt_password = "123mqtt456b";
 #define TOPIC_CONTROL_LIGHT BASE_TOPIC "control/light"
 #define TOPIC_LIGHT BASE_TOPIC "environment/light"
 #define TOPIC_ERROR BASE_TOPIC "error"
-// Heartbeat to keep MQTT alive and confirm status
 #define HEARTBEAT_TIME 20000
 uint32_t lastHeartbeat = 0;
 
@@ -65,6 +64,17 @@ uint32_t lastHeartbeat = 0;
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
+
+/* ===== ICONS (8x8) ===== */
+const unsigned char PROGMEM icon_wifi_on[] = {
+    0x00, 0x3c, 0x42, 0x81, 0x3c, 0x42, 0x18, 0x18};
+const unsigned char PROGMEM icon_wifi_off[] = {
+    0x81, 0x42, 0x24, 0x18, 0x18, 0x24, 0x42, 0x81};
+const unsigned char PROGMEM icon_mqtt_on[] = {
+    0xff, 0x81, 0xbd, 0x81, 0xff, 0x81, 0xbd, 0xff};
+const unsigned char PROGMEM icon_mqtt_off[] = {
+    0xff, 0x81, 0xa5, 0xd1, 0xd9, 0xa5, 0x81, 0xff};
+
 /* ===== I2C ===== */
 #define I2C_SDA 12
 #define I2C_SCL 13
@@ -83,7 +93,7 @@ bool buzzerActive = false;
 #define Y_LED_PIN 20
 #define RGB_LED_PIN 17
 bool rgbLedOn = false;
-#define TEMP_HOT 22.0 // °C
+#define TEMP_HOT 32.0
 
 /* ===== FAN ===== */
 #define FAN_PIN 16
@@ -111,8 +121,8 @@ byte authorizedUID[] = {0x43, 0x1E, 0x8D, 0x97};
 
 /* ===== SERVOMOTOR ===== */
 #define SERVO_PIN 18
-#define LOCK_OPEN_A 90
-#define LOCK_CLOSE_A 0
+#define LOCK_OPEN_A 0
+#define LOCK_CLOSE_A 180
 #define OPEN_DUR 10000
 Servo doorServo;
 uint32_t lockOpenTime = 0;
@@ -130,6 +140,11 @@ static bool lastFacePublished = false;
 static const uint32_t PIR_CALIBRATION_TIME = 60000;
 static const uint32_t PIR_IRQ_DEBOUNCE = 100;
 static bool lastMotionPublished = false;
+
+/* ===== SECURITY SYSTEM ===== */
+bool securityArmed = true;
+uint32_t armedTime = 0;
+const uint32_t EXIT_DELAY_MS = 15000;
 
 /* ===== Update timing ===== */
 static const uint32_t SENSOR_UPDATE_TIME = 2000;
@@ -180,24 +195,17 @@ void reconnect()
     client.subscribe(TOPIC_FACE_EVENT);
     client.subscribe(TOPIC_CONTROL_FAN);
     client.subscribe(TOPIC_CONTROL_LIGHT);
-    Serial.println("Subscribed to: " + String(TOPIC_CONTROL_DOOR) + "," + String(TOPIC_FACE_EVENT) + "," + String(TOPIC_CONTROL_FAN) + "," + String(TOPIC_CONTROL_LIGHT));
   }
   else
   {
     if (millis() - start > 30000)
-    {
-      Serial.println("Timeout");
       systemStatus = "MQTT Timeout";
-    }
     else
-    {
-      Serial.print("Failed: ");
-      Serial.println(client.state());
       systemStatus = "MQTT Failed";
-    }
   }
 }
 
+/* ===== Handles WiFi auto-reconnection if connection drops ===== */
 void handleWiFi()
 {
   if (WiFi.status() != WL_CONNECTED)
@@ -206,7 +214,6 @@ void handleWiFi()
     if (millis() - lastWiFiRetry > 10000)
     {
       lastWiFiRetry = millis();
-      Serial.println("WiFi lost - reconnecting...");
       WiFi.disconnect();
       WiFi.begin(ssid, password);
       systemStatus = "WiFi Reconnecting";
@@ -214,6 +221,7 @@ void handleWiFi()
   }
 }
 
+/* ===== Keeps the MQTT client processing loops and handles periodic heartbeats ===== */
 void handleMQTT()
 {
   client.loop();
@@ -236,61 +244,53 @@ void handleMQTT()
   }
 }
 
+/* ===== Processes incoming MQTT messages from subscribed control topics ===== */
 void callback(char *topic, byte *payload, unsigned int length)
 {
   String message = "";
   for (unsigned int i = 0; i < length; i++)
-  {
     message += (char)payload[i];
-  }
-  Serial.print("MQTT callback - topic: ");
-  Serial.print(topic);
-  Serial.print(" | message: ");
-  Serial.println(message);
-
   String topicStr = String(topic);
 
+  // Control door lock actuator via remote commands
   if (topicStr == TOPIC_CONTROL_DOOR)
   {
     if (message == "OPEN")
     {
-      Serial.println("Open the door");
+      Serial.println("Open the door from App - Disarming system");
       doorServo.write(LOCK_OPEN_A);
       lockIsOpen = true;
       lockOpenTime = millis();
-      client.publish(TOPIC_DOOR, DOOR_OPEN, true);
+      securityArmed = false; // Trust app command to automatically disarm security grid
+
+      if (client.connected())
+      {
+        client.publish(BASE_TOPIC "security/state", "DISARMED", true);
+      }
     }
     else if (message == "CLOSED" || message == "close")
     {
-      Serial.println("Close the door");
       doorServo.write(LOCK_CLOSE_A);
       lockIsOpen = false;
-      client.publish(TOPIC_DOOR, DOOR_CLOSED, true);
-    }
-    else
-    {
-      Serial.println("Unknown command: " + message);
     }
   }
+  // Face recognition event triggered from Raspberry Pi 5
   else if (topicStr == TOPIC_FACE_EVENT)
   {
     if (message == "Known face detected!")
     {
       faceAuthorized = true;
       lastFaceTime = millis();
-      Serial.println("Face authorized from Pi5!");
     }
   }
+  // Fan state and mode automation handler
   else if (topicStr == TOPIC_CONTROL_FAN)
   {
-    Serial.print("Fan command: ");
-    Serial.println(message);
     if (message == "AUTO")
     {
       autoModeEnabled = true;
       manualFanMode = false;
       lastManualOffTime = 0;
-      Serial.println(">>> Switched to AUTO mode");
       client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
       client.publish(BASE_TOPIC "environment/fan_mode", "AUTO", true);
     }
@@ -298,7 +298,6 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       autoModeEnabled = false;
       manualFanMode = true;
-      Serial.println(">>> Switched to MANUAL mode");
       client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
       client.publish(BASE_TOPIC "environment/fan_mode", "MANUAL", true);
     }
@@ -321,27 +320,25 @@ void callback(char *topic, byte *payload, unsigned int length)
       }
     }
   }
+  // Light fixture control topic
   else if (topicStr == TOPIC_CONTROL_LIGHT)
   {
-    Serial.print("Light command: ");
-    Serial.println(message);
     if (message == "ON")
     {
       digitalWrite(RGB_LED_PIN, HIGH);
       rgbLedOn = true;
       client.publish(TOPIC_LIGHT, "ON", true);
-      Serial.println("RGB LED ON from app");
     }
     else if (message == "OFF")
     {
       digitalWrite(RGB_LED_PIN, LOW);
       rgbLedOn = false;
       client.publish(TOPIC_LIGHT, "OFF", true);
-      Serial.println("RGB LED OFF from app");
     }
   }
 }
 
+/* ===== Reads data from BME280 sensor and publishes values to MQTT broker ===== */
 void handleEnvironment()
 {
   if (!client.connected())
@@ -349,12 +346,9 @@ void handleEnvironment()
   if (millis() - lastEnvPublish >= ENV_UPDATE_TIME)
   {
     lastEnvPublish = millis();
-    float newTemp = bme.readTemperature();
-    float newHum = bme.readHumidity();
-    float newPress = bme.readPressure() / 100.0F;
-    temp = newTemp;
-    hum = newHum;
-    press = newPress;
+    temp = bme.readTemperature();
+    hum = bme.readHumidity();
+    press = bme.readPressure() / 100.0F;
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "%.1f", temp);
     client.publish(TOPIC_TEMP, buffer, true);
@@ -362,13 +356,13 @@ void handleEnvironment()
     client.publish(TOPIC_HUM, buffer, true);
     snprintf(buffer, sizeof(buffer), "%.0f", press);
     client.publish(TOPIC_PRESS, buffer, true);
-    Serial.printf("Published → %.1f°C | %.1f%% | %.0f hPa\n", temp, hum, press);
   }
 }
 
+/* ===== Controls perimeter alarms, processing updates from PIR, Reed Switch, and RFID ===== */
 void handleSecurity()
 {
-  // Publish security events only on change
+  // Periodically synchronizes structural states to MQTT topics on modification
   if (client.connected())
   {
     if (motionDetected != lastMotionPublished)
@@ -393,15 +387,19 @@ void handleSecurity()
     }
   }
 
+  // Handle triggered motion sensor interrupts (Alarms sound only when armed and exit window has passed)
   if (motionIRQ)
   {
     motionIRQ = false;
     motionDetected = true;
     lastMotionTime = millis();
-    digitalWrite(B_LED_PIN, HIGH);
-    tone(BUZZER_PIN, BUZZER_FREQ);
-    buzzerActive = true;
-    buzzerOffTime = millis() + BUZZER_DUR;
+    if (securityArmed && (millis() - armedTime > EXIT_DELAY_MS))
+    {
+      digitalWrite(B_LED_PIN, HIGH);
+      tone(BUZZER_PIN, BUZZER_FREQ);
+      buzzerActive = true;
+      buzzerOffTime = millis() + BUZZER_DUR;
+    }
   }
 
   if (buzzerActive && millis() >= buzzerOffTime)
@@ -416,11 +414,11 @@ void handleSecurity()
     motionDetected = false;
   }
 
+  // Monitor physical alignment of the door using a magnetic reed switch contact
   int reedState = digitalRead(REED_PIN);
   if (reedState != lastReedState)
-  {
     lastReedChange = millis();
-  }
+
   if (millis() - lastReedChange > REED_DEBOUNCE)
   {
     bool newDoorOpen = (reedState == LOW);
@@ -429,51 +427,72 @@ void handleSecurity()
       doorOpen = newDoorOpen;
       if (client.connected())
       {
-        client.publish(TOPIC_DOOR, doorOpen ? DOOR_OPEN : DOOR_CLOSED);
+        client.publish(TOPIC_DOOR, doorOpen ? DOOR_OPEN : DOOR_CLOSED, true);
         lastDoorPublished = doorOpen;
       }
-      if (doorOpen)
+      // Trigger instant siren if door is opened while armed after exit cooldown expires
+      if (doorOpen && securityArmed && (millis() - armedTime > EXIT_DELAY_MS))
       {
         tone(BUZZER_PIN, BUZZER_FREQ);
         buzzerActive = true;
-        buzzerOffTime = millis() + BUZZER_DUR * 2;
+        buzzerOffTime = millis() + (BUZZER_DUR * 4);
       }
     }
   }
   lastReedState = reedState;
 
+  // Process RFID access card interactions for authorization profiles
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial())
   {
-    Serial.print("Card UID: ");
-    for (byte i = 0; i < mfrc522.uid.size; i++)
-    {
-      Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
-      Serial.print(mfrc522.uid.uidByte[i], HEX);
-    }
-    Serial.println();
-
     if (checkUID())
     {
-      if (faceAuthorized && (millis() - lastFaceTime < FACE_WINDOW))
+      if (securityArmed)
       {
-        Serial.println("ACCESS GRANTED");
-        doorServo.write(LOCK_OPEN_A);
-        lockIsOpen = true;
-        lockOpenTime = millis();
-        tone(BUZZER_PIN, 1500, 200);
-        delay(200);
-        tone(BUZZER_PIN, 2000, 200);
-        delay(200);
-        tone(BUZZER_PIN, 1500, 200);
-        if (client.connected())
-          client.publish(TOPIC_ACCESS, ACCESS_GRANTED, true);
+        // Perimeter is ARMED: Requires matching RFID token AND a validated face pattern to disarm
+        if (faceAuthorized && (millis() - lastFaceTime < FACE_WINDOW))
+        {
+          Serial.println("ACCESS GRANTED - DISARMING SYSTEM");
+          securityArmed = false;
+          doorServo.write(LOCK_OPEN_A);
+          lockIsOpen = true;
+          lockOpenTime = millis();
+          tone(BUZZER_PIN, 1500, 200);
+          delay(200);
+          tone(BUZZER_PIN, 2000, 200);
+          delay(200);
+          tone(BUZZER_PIN, 1500, 200);
+          if (client.connected())
+          {
+            client.publish(TOPIC_ACCESS, ACCESS_GRANTED, true);
+            client.publish(BASE_TOPIC "security/state", "DISARMED", true);
+          }
+        }
+        else
+        {
+          Serial.println("RFID OK but no recent face - ACCESS DENIED");
+          tone(BUZZER_PIN, 500, 800);
+          if (client.connected())
+            client.publish(TOPIC_ACCESS, ACCESS_DENIED_NO_FACE, true);
+        }
       }
       else
       {
-        Serial.println("RFID OK but no recent face - ACCESS DENIED");
-        tone(BUZZER_PIN, 500, 800);
+        // Perimeter is DISARMED: Swiping matching RFID acts as lock trigger and arms security network
+        Serial.println("SYSTEM ARMING (15 SECONDS DELAY)...");
+        securityArmed = true;
+        armedTime = millis(); // Initialize exit timer window
+        doorServo.write(LOCK_CLOSE_A);
+        lockIsOpen = false;
+
+        // Sound arming notification tone sequence
+        tone(BUZZER_PIN, 2000, 200);
+        delay(200);
+        tone(BUZZER_PIN, 1500, 200);
+
         if (client.connected())
-          client.publish(TOPIC_ACCESS, ACCESS_DENIED_NO_FACE, true);
+        {
+          client.publish(BASE_TOPIC "security/state", "ARMING", true);
+        }
       }
     }
     else
@@ -487,6 +506,7 @@ void handleSecurity()
     mfrc522.PCD_StopCrypto1();
   }
 
+  // Automatically latch lock mechanisms closed after predefined open frame duration
   if (lockIsOpen && millis() - lockOpenTime >= OPEN_DUR)
   {
     doorServo.write(LOCK_CLOSE_A);
@@ -504,6 +524,7 @@ void handleSecurity()
   }
 }
 
+/* ===== Handles UI updates on the SSD1306 OLED, formatting system states and dashboard values ===== */
 void handleDisplay()
 {
   if (millis() - lastSensorUpdate >= SENSOR_UPDATE_TIME)
@@ -514,29 +535,71 @@ void handleDisplay()
     press = bme.readPressure() / 100.0F;
 
     display.clearDisplay();
-    display.setCursor(0, 0);
-    display.println("SmartHome_ELIAS");
-    display.setCursor(0, 8);
-    display.printf("Temp: %.1f C\n", temp);
-    display.setCursor(0, 16);
-    display.printf("Hum: %.1f %%\n", hum);
-    display.setCursor(0, 24);
-    display.printf("Press: %.0f hPa\n", press);
-    display.setCursor(0, 32);
-    display.printf("Movements: %s\n", motionDetected ? MOTION_DETECTED "!" : MOTION_QUIET);
-    display.setCursor(0, 40);
-    display.printf("Door: %s\n", doorOpen ? DOOR_OPEN "!" : DOOR_CLOSED);
-    display.setCursor(0, 48);
-    display.printf("FaceID: %s\n", faceAuthorized ? "Face OK" : "No face");
-    display.setCursor(0, 56);
-    display.printf("WiFi %s | MQTT %s",
-                   WiFi.status() == WL_CONNECTED ? "OK" : "OFF",
-                   client.connected() ? "OK" : "OFF");
+
+    // --- 1. STATUS HEADER ---
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      display.drawBitmap(0, 0, icon_wifi_on, 8, 8, SSD1306_WHITE);
+    }
+    else
+    {
+      display.drawBitmap(0, 0, icon_wifi_off, 8, 8, SSD1306_WHITE);
+    }
+
+    if (client.connected())
+    {
+      display.drawBitmap(12, 0, icon_mqtt_on, 8, 8, SSD1306_WHITE);
+    }
+    else
+    {
+      display.drawBitmap(12, 0, icon_mqtt_off, 8, 8, SSD1306_WHITE);
+    }
+
+    display.setCursor(34, 0);
+    display.print("HOME.ELIAS");
+    display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+
+    // --- 2. ENVIRONMENT PANEL ---
+    display.setCursor(0, 14);
+    display.printf("T:%.1f H:%.0f%% P:%.0f", temp, hum, press);
+
+    // --- 3. SECURITY SYSTEM STATE ---
+    String secStatus = "OFF";
+    if (securityArmed)
+    {
+      if (millis() - armedTime > EXIT_DELAY_MS)
+      {
+        secStatus = "ARMED";
+      }
+      else
+      {
+        uint32_t timeLeft = (EXIT_DELAY_MS - (millis() - armedTime)) / 1000;
+        secStatus = "ARMING " + String(timeLeft) + "s";
+      }
+    }
+    display.setCursor(0, 26);
+    display.printf("Security: %s", secStatus.c_str());
+
+    // --- 4. PERIMETER DETECTORS ---
+    display.setCursor(0, 36);
+    display.printf("Door: %s", doorOpen ? "OPEN!" : "Closed");
+
+    display.setCursor(72, 36);
+    display.printf(" Mot: %s", motionDetected ? "YES" : "No");
+
+    // --- 5. BIOMETRIC AUTHENTICATION ---
+    display.setCursor(0, 46);
+    display.printf("Face ID: %s", faceAuthorized ? "OK (Auth)" : "None");
+
+    // --- 6. HVAC CONTROL FOOTER ---
+    display.drawLine(0, 55, 128, 55, SSD1306_WHITE);
+    display.setCursor(0, 57);
+    display.printf("Fan: %s | Mode: %s", fanOn ? "ON" : "OFF", autoModeEnabled ? "AUTO" : "MAN");
+
     display.display();
 
+    // Climate automation logic rules (Auto-switch control loops)
     bool autoShouldOn = (temp > TEMP_HOT);
-    static bool lastFanPublished = false;
-
     if (autoModeEnabled)
     {
       bool should = autoShouldOn;
@@ -550,22 +613,6 @@ void handleDisplay()
       client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
       lastFanPublished = fanOn;
     }
-
-    Serial.printf("Fan: %s | AutoMode: %s | Temp: %.1f > %.1f ? %s\n",
-                  fanOn ? "ON" : "OFF",
-                  autoModeEnabled ? "YES" : "NO",
-                  temp, TEMP_HOT,
-                  autoShouldOn ? "YES" : "NO");
-
-    Serial.printf(
-        "Temp: %.1f C | Hum: %.1f %% | Press: %.0f hPa | Movements: %s | Door: %s | FaceID: %s | WiFi: %s | MQTT: %s | Status: %s\n",
-        temp, hum, press,
-        motionDetected ? MOTION_DETECTED "!" : MOTION_QUIET,
-        doorOpen ? DOOR_OPEN "!" : DOOR_CLOSED,
-        faceAuthorized ? "Face OK" : "No face",
-        WiFi.status() == WL_CONNECTED ? "OK" : "OFF",
-        client.connected() ? "OK" : "OFF",
-        systemStatus.c_str());
   }
 }
 
@@ -573,27 +620,21 @@ void setup()
 {
   Serial.begin(115200);
   delay(2000);
-  Serial.println("SmartHome_ELIAS");
 
   WiFi.begin(ssid, password);
   uint32_t wifiTimeout = millis() + 20000;
   while (WiFi.status() != WL_CONNECTED && millis() < wifiTimeout)
   {
     delay(500);
-    Serial.print(".");
   }
   if (WiFi.status() == WL_CONNECTED)
   {
-    Serial.println("\nWiFi connected");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
     client.setServer(mqtt_server, 1883);
     client.setCallback(callback);
     reconnect();
   }
   else
   {
-    Serial.println("\nWiFi FAILED");
     systemStatus = "WiFi Failed";
   }
 
@@ -604,18 +645,14 @@ void setup()
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-
   pinMode(B_LED_PIN, OUTPUT);
-  pinMode(Y_LED_PIN, OUTPUT);
   digitalWrite(B_LED_PIN, LOW);
+  pinMode(Y_LED_PIN, OUTPUT);
   digitalWrite(Y_LED_PIN, LOW);
-
   pinMode(RGB_LED_PIN, OUTPUT);
   digitalWrite(RGB_LED_PIN, LOW);
-
   pinMode(FAN_PIN, OUTPUT);
   digitalWrite(FAN_PIN, LOW);
-
   pinMode(REED_PIN, INPUT_PULLUP);
 
   doorServo.attach(SERVO_PIN);
@@ -624,76 +661,100 @@ void setup()
 
   if (WiFi.status() == WL_CONNECTED)
   {
-    reconnect();
     client.publish(TOPIC_FAN, fanOn ? "ON" : "OFF", true);
     client.publish(TOPIC_LIGHT, rgbLedOn ? "ON" : "OFF", true);
   }
 
-  Serial.println("Checking all components...");
   bool allOk = true;
-
   bool oledOk = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   if (!oledOk)
-  {
-    Serial.println("OLED SSD1306 not detected!");
     allOk = false;
-  }
-
   if (!bme.begin(0x77))
-  {
-    Serial.println("BME280 not detected!");
     allOk = false;
-  }
 
   SPI.setRX(4);
-  SPI.setTX(7);
-  SPI.setSCK(6);
+  SPI.setTX(3);
+  SPI.setSCK(2);
   SPI.begin();
   mfrc522.PCD_Init();
   byte version = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
   if (version == 0x00 || version == 0xFF)
-  {
-    Serial.println("RFID RC522 not detected or wiring issue!");
     allOk = false;
-  }
 
-  if (allOk)
-  {
-    Serial.println("ALL COMPONENTS OK!");
-  }
-  else
-  {
-    Serial.println("CHECK WIRING!");
+  if (!allOk)
     systemStatus = "Components Failed";
-  }
 
   if (oledOk)
   {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("SmartHome_ELIAS");
-    display.setCursor(0, 15);
-    if (allOk)
+
+    // --- 1. STATUS HEADER ---
+    if (WiFi.status() == WL_CONNECTED)
     {
-      display.println("ALL COMPONENTS OK!");
+      display.drawBitmap(0, 0, icon_wifi_on, 8, 8, SSD1306_WHITE);
     }
     else
     {
-      display.println("CHECK WIRING!");
+      display.drawBitmap(0, 0, icon_wifi_off, 8, 8, SSD1306_WHITE);
     }
-    display.setCursor(0, 30);
-    display.println("PIR calibrating...");
-    display.setCursor(0, 45);
-    display.printf("WiFi %s | MQTT %s", WiFi.status() == WL_CONNECTED ? "OK" : "OFF", client.connected() ? "OK" : "N/A");
+
+    if (client.connected())
+    {
+      display.drawBitmap(12, 0, icon_mqtt_on, 8, 8, SSD1306_WHITE);
+    }
+    else
+    {
+      display.drawBitmap(12, 0, icon_mqtt_off, 8, 8, SSD1306_WHITE);
+    }
+
+    display.setCursor(34, 0);
+    display.print("HOME.ELIAS");
+    display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+
+    // --- 2. INITIALIZATION STATE ---
+    display.setCursor(0, 22);
+    if (allOk)
+    {
+      display.print("SYSTEM STATUS: OK");
+    }
+    else
+    {
+      display.print("SYSTEM ERROR!");
+    }
+
+    display.setCursor(0, 36);
+    display.print(allOk ? "All components ready." : "Check wiring!");
+
+    display.drawLine(0, 49, 128, 49, SSD1306_WHITE);
+
+    // --- 3. PIR CALIBRATION SEQUENCER WITH COUNTDOWN ---
+    int countdownSeconds = PIR_CALIBRATION_TIME / 1000;
+
+    for (int i = countdownSeconds; i > 0; i--)
+    {
+      display.fillRect(0, 51, 128, 13, SSD1306_BLACK);
+
+      display.setCursor(0, 54);
+      display.printf("PIR Calibrating: %ds", i);
+      display.display();
+
+      delay(1000);
+    }
+
+    display.fillRect(0, 51, 128, 13, SSD1306_BLACK);
+    display.setCursor(0, 54);
+    display.print("System Ready!");
     display.display();
+    delay(1000);
+  }
+  else
+  {
+    delay(PIR_CALIBRATION_TIME);
   }
 
-  Serial.println("PIR calibration...");
-  delay(PIR_CALIBRATION_TIME);
   attachInterrupt(digitalPinToInterrupt(PIR_PIN), pirISR, RISING);
-  Serial.println("System ready.");
 }
 
 void loop()
