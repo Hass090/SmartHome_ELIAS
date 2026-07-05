@@ -25,6 +25,12 @@ An open-source smart home automation ecosystem powered by **Raspberry Pi 5** and
 2. **Backend:** Launch the Flask server and MQTT bridge using Python.
 3. **Firmware:** Flash the Pico 2W firmware using PlatformIO (ensure all required Adafruit, MFRC522, and Servo libraries are installed).
 
+## Mobile Companion
+Looking for the official mobile client? You can find it here:
+**[SmartHomeApp_ELIAS](https://github.com/Hass090/SmartHomeApp_ELIAS)**
+
+This Flutter-based application allows you to monitor telemetry in real-time, manage security settings, and control your home devices remotely.
+
 ## License
 This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**. 
 
