@@ -23,9 +23,9 @@ using std::abs;
 #define ACCESS_DENIED_NO_FACE "DENIED: No face"
 #define ACCESS_DENIED_UNKNOWN "DENIED: Unknown RFID"
 
-const char *ssid = "NOS-ADA4";
-const char *password = "R6H44EEE";
-const char *mqtt_server = "192.168.1.25";
+const char *ssid = "SSID";
+const char *password = "PASSWORD";
+const char *mqtt_server = "IP_MQTT";
 
 WiFiClient wificlient;
 PubSubClient client(wificlient);
